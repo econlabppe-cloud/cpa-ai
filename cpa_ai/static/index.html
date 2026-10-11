@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPA-AI — הכנת דוחות</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--ink:#1c2333;--mut:#667085;--line:#e3e7ef;--pri:#1f4fd1;--ok:#16794c;--warn:#a15c00;--err:#b42318}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:#14213d;color:#fff;padding:14px 16px}header h1{margin:0;font-size:20px}header p{margin:4px 0 0;font-size:13px;opacity:.8}
+.wrap{max-width:1100px;margin:0 auto;padding:16px}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}nav button{border:1px solid var(--line);background:#fff;padding:8px 14px;border-radius:8px;cursor:pointer;font:inherit}
+nav button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.row>label{flex:1;min-width:160px}
+label{display:block;font-size:13px;color:var(--mut)}input,select,textarea{width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;font:inherit;margin-top:3px;background:#fff}
+textarea{min-height:180px;direction:rtl}
+button.act{background:var(--pri);color:#fff;border:0;padding:9px 16px;border-radius:8px;cursor:pointer;font:inherit}
+button.sec{background:#fff;color:var(--pri);border:1px solid var(--pri);padding:7px 12px;border-radius:8px;cursor:pointer;font:inherit}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:right;padding:7px;border-bottom:1px solid var(--line);vertical-align:top}
+.b{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px}.b.confirmed,.b.approved{background:#dcfae6;color:var(--ok)}
+.b.pending_review,.b.prepared{background:#fef0c7;color:var(--warn)}.b.rejected,.b.superseded{background:#fee4e2;color:var(--err)}
+.f{font-size:12px;margin:2px 0}.f.error{color:var(--err)}.f.warning{color:var(--warn)}.f.info{color:var(--mut)}
+.banner{background:#fff6e5;border:1px solid #f5d39a;border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px}
+pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;font-size:12px;direction:ltr;text-align:left}
+#msg{position:fixed;bottom:16px;left:16px;right:16px;max-width:600px;margin:auto;padding:10px 14px;border-radius:8px;display:none;z-index:9}
+.hide{display:none}.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}.kpi div{background:var(--bg);border-radius:8px;padding:10px}.kpi b{display:block;font-size:18px}
+</style>
+</head>
+<body>
+<header><div class="wrap" style="padding:0">
+  <h1>CPA-AI — הכנת ספרים ודוחות לעוסק מורשה</h1>
+  <p>המערכת מכינה. מייצג מורשה (רו"ח / יועץ מס / עו"ד) מאשר. שידור לרשויות — רק דרך המייצג.</p>
+</div></header>
+<div class="wrap">
+  <div class="banner">⚠️ כלי עזר בלבד — אינו מהווה ייעוץ מס. כללים שסומנו "לא אומת" מחייבים בדיקה מקצועית בכל מסמך.</div>
+
+  <div class="card row">
+    <label>מפתח API<input id="apikey" type="password" placeholder="אם הוגדר CPA_AI_API_KEY"></label>
+    <label>שם המשתמש (ליומן)<input id="actor" placeholder="שם מלא"></label>
+    <label>עסק פעיל<select id="biz"></select></label>
+    <button class="sec" onclick="loadBiz()">רענון</button>
+  </div>
+
+  <nav id="tabs"></nav>
+
+  <section id="t-biz" class="card">
+    <h3>עסק חדש</h3>
+    <div class="row">
+      <label>שם העסק<input id="b-name"></label>
+      <label>מספר עוסק מורשה<input id="b-vat" inputmode="numeric"></label>
+      <label>שם הבעלים<input id="b-owner"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label>תדירות דיווח מע"מ<select id="b-freq"><option value="bimonthly">דו-חודשי</option><option value="monthly">חודשי</option></select></label>
+      <label>שיעור מקדמות (%)<input id="b-adv" type="number" step="0.1" value="0"></label>
+      <label><input id="b-consent" type="checkbox" style="width:auto"> הסכמה להעברת מסמכים לספק LLM חיצוני</label>
+      <button class="act" onclick="createBiz()">יצירה</button>
+    </div>
+  </section>
+
+  <section id="t-ingest" class="card hide">
+    <h3>קליטת חשבונית הוצאה</h3>
+    <label>טקסט החשבונית (העתקה / OCR)<textarea id="i-text" placeholder="הדביקו כאן את תוכן החשבונית"></textarea></label>
+    <div class="row" style="margin-top:8px">
+      <label>מחלץ<select id="i-mode"><option value="auto">אוטומטי</option><option value="heuristic">מקומי (ללא רשת)</option><option value="openai">OpenAI (מחייב הסכמה)</option></select></label>
+      <button class="act" onclick="ingestText()">עיבוד</button>
+      <label>או העלאת קובץ (טקסט / תמונה)<input id="i-file" type="file" accept=".txt,image/*"></label>
+      <button class="sec" onclick="ingestFile()">העלאה</button>
+    </div>
+    <div id="i-out"></div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
+    <h3>רישום הכנסה (חשבונית שהופקה)</h3>
+    <div class="row">
+      <label>תאריך<input id="n-date" type="date"></label>
+      <label>סוג<select id="n-type"><option value="tax_invoice">חשבונית מס</option><option value="tax_invoice_receipt">חשבונית מס/קבלה</option><option value="credit_invoice">חשבונית זיכוי</option></select></label>
+      <label>מספר מסמך<input id="n-num"></label>
+      <label>לקוח<input id="n-cust"></label>
+      <label>ע.מ לקוח<input id="n-cid"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label>סכום לפני מע"מ<input id="n-pre" type="number" step="0.01"></label>
+      <label>ניכוי במקור<input id="n-wh" type="number" step="0.01" value="0"></label>
+      <label>מספר הקצאה<input id="n-alloc"></label>
+      <button class="act" onclick="addIncome()">רישום</button>
+    </div>
+  </section>
+
+  <section id="t-docs" class="card hide">
+    <div class="row"><h3 style="flex:1">מסמכים</h3>
+      <label style="max-width:200px">סינון<select id="d-filter" onchange="loadDocs()"><option value="pending_review">ממתינים לבדיקה</option><option value="">הכל</option><option value="confirmed">מאושרים</option><option value="rejected">נדחו</option></select></label>
+    </div>
+    <div id="d-list"></div>
+  </section>
+
+  <section id="t-reports" class="card hide">
+    <h3>הכנת דוח</h3>
+    <div class="row">
+      <label>סוג<select id="r-kind"><option value="vat_period">מע"מ תקופתי</option><option value="income_tax_advance">מקדמות מס הכנסה</option><option value="annual_estimate">הערכה שנתית</option></select></label>
+      <label>שנה<input id="r-year" type="number"></label>
+      <label>חודש (לדוח תקופתי)<input id="r-month" type="number" min="1" max="12"></label>
+      <label>נקודות זיכוי<input id="r-cp" type="number" step="0.25" value="2.25"></label>
+      <button class="act" onclick="prepare()">הכנה</button>
+      <button class="sec" onclick="unified()">קובץ מבנה אחיד (טיוטה)</button>
+    </div>
+    <div id="r-list" style="margin-top:12px"></div>
+  </section>
+
+  <section id="t-rules" class="card hide"><h3>כללי המס ומקורותיהם</h3><div id="rules"></div></section>
+  <section id="t-audit" class="card hide"><h3>יומן ביקורת</h3><div id="audit"></div>
+    <div class="row" style="margin-top:10px"><button class="sec" onclick="privacyExport()">ייצוא כל המידע של העסק</button><button class="sec" onclick="purgeRaw()">מחיקת טקסט גולמי</button></div>
+  </section>
+</div>
+<div id="msg"></div>
+
+<script>
+const TABS=[["biz","עסק"],["ingest","קליטה"],["docs","תור בדיקה"],["reports","דוחות ואישור"],["rules","כללים"],["audit","יומן ופרטיות"]];
+const KIND={vat_period:'מע"מ תקופתי',income_tax_advance:"מקדמות מס הכנסה",annual_estimate:"הערכה שנתית"};
+const ST={confirmed:"מאושר",pending_review:"ממתין לבדיקה",rejected:"נדחה",prepared:"מוכן לאישור",approved:"אושר",superseded:"מיושן"};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money=n=>n==null?"—":Number(n).toLocaleString("he-IL",{minimumFractionDigits:2,maximumFractionDigits:2})+" ₪";
+function store(k,v){try{v===undefined?0:localStorage.setItem(k,v);return localStorage.getItem(k)}catch(e){return null}}
+$("apikey").value=store("cpa_key")||"";$("actor").value=store("cpa_actor")||"";
+$("apikey").onchange=e=>store("cpa_key",e.target.value);$("actor").onchange=e=>store("cpa_actor",e.target.value);
+$("r-year").value=new Date().getFullYear();$("r-month").value=new Date().getMonth()+1;$("n-date").valueAsDate=new Date();
+
+function toast(t,ok){const m=$("msg");m.textContent=t;m.style.display="block";m.style.background=ok?"#dcfae6":"#fee4e2";m.style.color=ok?"#16794c":"#b42318";clearTimeout(m._t);m._t=setTimeout(()=>m.style.display="none",5000)}
+async function api(path,opt={}){
+  const h={"X-API-Key":$("apikey").value,"X-Actor":encodeURIComponent($("actor").value||"ui")};
+  if(opt.json){h["Content-Type"]="application/json";opt.body=JSON.stringify(opt.json)}
+  const r=await fetch(path,{...opt,headers:{...h,...(opt.headers||{})}});
+  if(opt.raw){if(!r.ok)throw new Error((await r.json()).detail);return r}
+  const d=r.status===204?null:await r.json();
+  if(!r.ok)throw new Error(typeof d.detail==="string"?d.detail:JSON.stringify(d.detail));
+  return d;
+}
+const B=()=>$("biz").value;
+function needBiz(){if(!B()){toast("יש לבחור או ליצור עסק");return false}return true}
+function show(t){TABS.forEach(([k])=>{$("t-"+k).classList.toggle("hide",k!==t);$("tab-"+k).classList.toggle("on",k===t)});
+  if(t==="docs")loadDocs();if(t==="reports")loadReports();if(t==="rules")loadRules();if(t==="audit")loadAudit()}
+$("tabs").innerHTML=TABS.map(([k,l])=>`<button id="tab-${k}" onclick="show('${k}')">${l}</button>`).join("");
+
+async function loadBiz(){try{const l=await api("/api/v1/businesses");const cur=B()||store("cpa_biz");
+  $("biz").innerHTML=l.map(b=>`<option value="${b.id}">${esc(b.name)} (${b.vat_id})${b.llm_consent?"":" · ללא LLM"}</option>`).join("");
+  if(cur&&l.some(b=>String(b.id)===String(cur)))$("biz").value=cur;}catch(e){toast(e.message)}}
+$("biz").onchange=e=>store("cpa_biz",e.target.value);
+async function createBiz(){try{const b=await api("/api/v1/businesses",{method:"POST",json:{name:$("b-name").value,vat_id:$("b-vat").value.trim(),owner_name:$("b-owner").value,vat_frequency:$("b-freq").value,advance_rate_percent:+$("b-adv").value||0,llm_consent:$("b-consent").checked}});
+  store("cpa_biz",b.id);await loadBiz();toast("העסק נוצר",1);show("ingest")}catch(e){toast(e.message)}}
+
+function findings(d){return (d.decision.findings||[]).map(f=>`<div class="f ${f.severity}">${f.severity==="error"?"⛔":f.severity==="warning"?"⚠️":"ℹ️"} ${esc(f.message)}</div>`).join("")}
+function docRow(d){const e=d.extracted,x=d.decision;
+  const actions=d.status==="pending_review"?`<button class="sec" onclick="review(${d.id},'confirm')">אישור</button> <button class="sec" onclick="editDoc(${d.id})">תיקון</button> <button class="sec" onclick="review(${d.id},'reject')">דחייה</button>`:"";
+  return `<tr><td>#${d.id}<br><span class="b ${d.status}">${ST[d.status]}</span></td>
+  <td>${d.direction==="income"?"הכנסה":"הוצאה"}<br>${esc(e.vendor_name||e.customer_name||"")}<br><small>${esc(e.vendor_id||e.customer_id||"")}</small></td>
+  <td>${esc(e.doc_date||"—")}</td><td>${money(x.total_amount)}<br><small>מע"מ ${money(x.vat_amount)}</small></td>
+  <td>${x.category_label?esc(x.category_label)+`<br><small>הכרה ${Math.round(x.income_tax_recognition*100)}% · מע"מ מנוכה ${money(x.deductible_vat)}</small>`:""}${x.confidence!=null?`<br><small>ביטחון ${x.confidence}</small>`:""}</td>
+  <td>${findings(d)}</td><td>${actions}</td></tr>`}
+function docTable(l){return l.length?`<table><tr><th>מסמך</th><th>צד</th><th>תאריך</th><th>סכום</th><th>סיווג</th><th>ממצאים</th><th></th></tr>${l.map(docRow).join("")}</table>`:"<p>אין מסמכים</p>"}
+
+async function ingestText(){if(!needBiz())return;try{const d=await api(`/api/v1/businesses/${B()}/documents/text`,{method:"POST",json:{text:$("i-text").value,extractor:$("i-mode").value}});
+  $("i-out").innerHTML=docTable([d]);toast(d.status==="confirmed"?"נקלט ואושר אוטומטית":"נקלט — ממתין לבדיקה",1)}catch(e){toast(e.message)}}
+async function ingestFile(){if(!needBiz())return;const f=$("i-file").files[0];if(!f)return toast("לא נבחר קובץ");
+  const fd=new FormData();fd.append("file",f);try{const d=await api(`/api/v1/businesses/${B()}/documents/upload`,{method:"POST",body:fd});$("i-out").innerHTML=docTable([d]);toast("נקלט",1)}catch(e){toast(e.message)}}
+async function addIncome(){if(!needBiz())return;try{const d=await api(`/api/v1/businesses/${B()}/income`,{method:"POST",json:{doc_date:$("n-date").value,doc_type:$("n-type").value,doc_number:$("n-num").value||null,customer_name:$("n-cust").value||null,customer_id:$("n-cid").value||null,pre_vat_amount:+$("n-pre").value,withholding_tax:+$("n-wh").value||0,allocation_number:$("n-alloc").value||null}});
+  $("i-out").innerHTML=docTable([d]);toast("ההכנסה נרשמה",1)}catch(e){toast(e.message)}}
+
+async function loadDocs(){if(!needBiz())return;const s=$("d-filter").value;try{$("d-list").innerHTML=docTable(await api(`/api/v1/businesses/${B()}/documents${s?"?status="+s:""}`))}catch(e){toast(e.message)}}
+async function review(id,action,extra={}){const reviewer=$("actor").value;if(!reviewer)return toast("יש למלא שם משתמש לפני בדיקה");
+  try{await api(`/api/v1/documents/${id}/review`,{method:"POST",json:{action,reviewer,...extra}});toast("עודכן",1);loadDocs()}catch(e){toast(e.message)}}
+async function editDoc(id){const d=await api(`/api/v1/documents/${id}`);const e=d.extracted;
+  const ask=(l,v)=>{const r=prompt(l,v??"");return r===null?undefined:(r===""?null:r)};
+  const fields=[["vendor_id","מספר עוסק ספק"],["doc_date","תאריך (YYYY-MM-DD)"],["pre_vat_amount","לפני מע\"מ"],["vat_amount","מע\"מ"],["total_amount","סה\"כ"],["allocation_number","מספר הקצאה"]];
+  const c={...e};for(const[k,l]of fields){const v=ask(l,e[k]);if(v===undefined)return;c[k]=v!==null&&k.endsWith("amount")?+v:v}
+  const cat=ask("קטגוריה (office_supplies/software/inventory/professional_services/vehicle/refreshments/hospitality/equipment) — ריק לאוטומטי","");
+  if(cat===undefined)return;review(id,"confirm",{corrections:c,category_override:cat})}
+
+function reportBody(r){const p=r.payload;let k="";
+  if(r.kind==="vat_period")k=`<div class="kpi"><div>עסקאות חייבות<b>${money(p.sales.taxable_pre_vat)}</b></div><div>מע"מ עסקאות<b>${money(p.sales.output_vat)}</b></div><div>תשומות ציוד<b>${money(p.inputs.fixed_assets_vat)}</b></div><div>תשומות אחרות<b>${money(p.inputs.other_vat)}</b></div><div>${p.vat_payable>=0?"לתשלום":"להחזר"}<b>${money(Math.abs(p.vat_payable))}</b></div></div>`;
+  if(r.kind==="income_tax_advance")k=`<div class="kpi"><div>מחזור<b>${money(p.turnover_pre_vat)}</b></div><div>שיעור<b>${p.advance_rate_percent}%</b></div><div>ניכוי במקור<b>${money(p.withholding_credit)}</b></div><div>מקדמה לתשלום<b>${money(p.advance_payable)}</b></div></div>`;
+  if(r.kind==="annual_estimate")k=`<div class="kpi"><div>הכנסות<b>${money(p.revenue_pre_vat)}</b></div><div>הוצאות מוכרות<b>${money(p.recognized_expenses_total)}</b></div><div>רווח<b>${money(p.business_profit)}</b></div><div>מס משוער<b>${money(p.estimated_income_tax)}</b></div></div>`;
+  const w=(p.warnings||[]).map(x=>`<div class="f warning">⚠️ ${esc(x)}</div>`).join("");
+  const appr=r.status==="approved"?`<p class="f info">אושר ע"י ${esc(r.approved_by)} (${esc(r.approver_license_type)} ${esc(r.approver_license_number)}) · hash ${r.content_hash.slice(0,12)}…</p>`:"";
+  const act=r.status==="prepared"?`<button class="act" onclick="approve(${r.id})">אישור מייצג</button>`:r.status==="approved"?`<button class="sec" onclick="download(${r.id})">הורדת JSON</button> <button class="sec" onclick="transmit(${r.id})">שידור</button>`:"";
+  return `<div class="card"><div class="row"><h4 style="flex:1;margin:0">#${r.id} ${KIND[r.kind]} · ${r.period_start} – ${r.period_end}</h4><span class="b ${r.status}">${ST[r.status]}</span></div>${k}${w}<p class="f info">${esc(p.form_reference)}</p>${appr}${act}</div>`}
+async function loadReports(){if(!needBiz())return;try{$("r-list").innerHTML=(await api(`/api/v1/businesses/${B()}/reports`)).filter(r=>r.status!=="superseded").map(reportBody).join("")||"<p>אין דוחות</p>"}catch(e){toast(e.message)}}
+async function prepare(){if(!needBiz())return;const k=$("r-kind").value;const q=new URLSearchParams({kind:k,year:$("r-year").value,credit_points:$("r-cp").value});if(k!=="annual_estimate")q.set("month",$("r-month").value);
+  try{await api(`/api/v1/businesses/${B()}/reports?${q}`,{method:"POST"});toast("הדוח הוכן",1);loadReports()}catch(e){toast(e.message)}}
+async function approve(id){const name=prompt("שם המאשר");if(!name)return;const t=prompt("סוג רישיון: cpa / tax_advisor / lawyer","cpa");if(!t)return;const n=prompt("מספר רישיון");if(!n)return;
+  if(!confirm("אני מאשר/ת שבדקתי את הדוח ואני נושא/ת באחריות המקצועית לנכונותו"))return;
+  try{await api(`/api/v1/reports/${id}/approve`,{method:"POST",json:{approver_name:name,license_type:t,license_number:n,attest:true}});toast("הדוח אושר",1)}catch(e){toast(e.message)}loadReports()}
+async function transmit(id){try{await api(`/api/v1/reports/${id}/transmit`,{method:"POST"})}catch(e){toast(e.message)}}
+async function download(id){const r=await api(`/api/v1/reports/${id}`);saveBlob(new Blob([JSON.stringify(r,null,2)],{type:"application/json"}),`report_${id}.json`)}
+async function unified(){if(!needBiz())return;try{const r=await api(`/api/v1/businesses/${B()}/unified-file?year=${$("r-year").value}`,{raw:true});saveBlob(await r.blob(),`unified_${$("r-year").value}.zip`)}catch(e){toast(e.message)}}
+function saveBlob(b,name){const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+
+async function loadRules(){try{const r=await api("/api/v1/rules");const v=s=>s.verified?'<span class="b confirmed">אומת</span>':'<span class="b pending_review">לא אומת</span>';
+  $("rules").innerHTML=`<p>מע"מ: ${r.vat_rates.map(x=>`${x.from}: ${Math.round(x.rate*100)}%`).join(" · ")} ${v(r.vat_source)}<br><small>${esc(r.vat_source.citation)}</small></p>
+  <p>סף מספר הקצאה (לפני מע"מ): ${r.allocation_thresholds.filter(x=>x.threshold).map(x=>`${x.from}: ${x.threshold.toLocaleString("he-IL")} ₪`).join(" · ")} ${v(r.allocation_source)}<br><small>${esc(r.allocation_source.citation)} — ${esc(r.allocation_source.note)}</small></p>
+  <table><tr><th>קטגוריה</th><th>הכרה במס הכנסה</th><th>ניכוי מע"מ</th><th>מקור</th></tr>${r.categories.map(c=>`<tr><td>${esc(c.label)}<br><small>${c.key}</small></td><td>${Math.round(c.income_tax_recognition*100)}%</td><td>${Math.round(c.vat_deduction*1000)/10}%</td><td>${v(c.source)} ${esc(c.source.citation)}${c.source.note?`<br><small>${esc(c.source.note)}</small>`:""}</td></tr>`).join("")}</table>`}catch(e){toast(e.message)}}
+async function loadAudit(){try{const l=await api("/api/v1/audit?limit=200");$("audit").innerHTML=`<table><tr><th>זמן</th><th>משתמש</th><th>פעולה</th><th>ישות</th><th>פרטים</th></tr>${l.map(a=>`<tr><td>${new Date(a.ts).toLocaleString("he-IL")}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.entity)} #${a.entity_id??""}</td><td><small>${esc(JSON.stringify(a.details))}</small></td></tr>`).join("")}</table>`}catch(e){toast(e.message)}}
+async function privacyExport(){if(!needBiz())return;const d=await api(`/api/v1/businesses/${B()}/privacy/export`);saveBlob(new Blob([JSON.stringify(d,null,2)],{type:"application/json"}),`privacy_export_${B()}.json`)}
+async function purgeRaw(){if(!needBiz()||!confirm("למחוק את הטקסט הגולמי של כל המסמכים? רשומות החשבונאות יישמרו."))return;try{const r=await api(`/api/v1/businesses/${B()}/privacy/purge-raw`,{method:"POST"});toast(`נמחק טקסט גולמי מ-${r.purged_documents} מסמכים`,1)}catch(e){toast(e.message)}}
+
+show("biz");loadBiz();
+</script>
+</body>
+</html>

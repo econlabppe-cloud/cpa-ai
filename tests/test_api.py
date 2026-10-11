@@ -1,0 +1,152 @@
+import io
+import zipfile
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from cpa_ai.api import create_app
+
+from .test_rules import HEB_INVOICE
+
+H = {"X-API-Key": "k", "X-Actor": "tester"}
+SAMPLES = Path(__file__).parent.parent / "samples"
+APPROVER = {"approver_name": "רו\"ח ישראלה", "license_type": "cpa", "license_number": "12345", "attest": True}
+
+
+@pytest.fixture
+def client():
+    return TestClient(create_app("sqlite://", api_key="k"))
+
+
+@pytest.fixture
+def biz(client):
+    r = client.post("/api/v1/businesses", headers=H, json={
+        "name": "סטודיו לדוגמה", "vat_id": "037544129", "owner_name": "דנה", "advance_rate_percent": 5})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_auth_required(client):
+    assert client.get("/api/v1/businesses").status_code == 401
+    assert client.get("/api/v1/health").status_code == 200
+
+
+def test_invalid_business_id_rejected(client):
+    r = client.post("/api/v1/businesses", headers=H, json={"name": "x", "vat_id": "123456789", "owner_name": "y"})
+    assert r.status_code == 422
+
+
+def test_full_flow_vat_report(client, biz):
+    # הוצאה נקייה — מאושרת אוטומטית
+    r = client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H, json={"text": HEB_INVOICE})
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "confirmed"
+
+    # הוצאת דלק — כלל לא מאומת, ממתינה לבדיקה
+    fuel = HEB_INVOICE.replace("אופיס דיפו", "סונול").replace("נייר A4 - 10 חבילות", "דלק 95").replace("טונר HP", "")
+    fuel_doc = client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H, json={"text": fuel}).json()
+    assert fuel_doc["status"] == "pending_review"
+
+    # הכנסה
+    r = client.post(f"/api/v1/businesses/{biz}/income", headers=H, json={
+        "doc_date": "2026-08-03", "pre_vat_amount": 4000, "customer_name": "לקוח", "withholding_tax": 50})
+    assert r.status_code == 201 and r.json()["decision"]["vat_amount"] == 720.0
+
+    rep = client.post(f"/api/v1/businesses/{biz}/reports", headers=H,
+                      params={"kind": "vat_period", "year": 2026, "month": 7}).json()
+    assert rep["period_start"] == "2026-07-01" and rep["period_end"] == "2026-08-31"
+    assert rep["payload"]["pending_document_ids"] == [fuel_doc["id"]]
+    # אי אפשר לאשר עם מסמכים ממתינים
+    assert client.post(f"/api/v1/reports/{rep['id']}/approve", headers=H, json=APPROVER).status_code == 409
+
+    # בודק מאשר את הדלק
+    r = client.post(f"/api/v1/documents/{fuel_doc['id']}/review", headers=H,
+                    json={"action": "confirm", "reviewer": "רו\"ח ישראלה"})
+    assert r.status_code == 200 and r.json()["status"] == "confirmed"
+
+    rep = client.post(f"/api/v1/businesses/{biz}/reports", headers=H,
+                      params={"kind": "vat_period", "year": 2026, "month": 8}).json()
+    p = rep["payload"]
+    assert p["sales"]["output_vat"] == 720.0
+    assert p["inputs"]["other_vat"] == 180.0 + 120.0
+    assert p["vat_payable"] == 720.0 - 300.0
+
+    # שידור לפני אישור — חסום
+    assert client.post(f"/api/v1/reports/{rep['id']}/transmit", headers=H).status_code == 409
+    # אישור בלי הצהרה — חסום
+    assert client.post(f"/api/v1/reports/{rep['id']}/approve", headers=H,
+                       json={**APPROVER, "attest": False}).status_code == 409
+
+    ok = client.post(f"/api/v1/reports/{rep['id']}/approve", headers=H, json=APPROVER)
+    assert ok.status_code == 200 and ok.json()["status"] == "approved"
+    # שידור אחרי אישור — לא ממומש במכוון
+    assert client.post(f"/api/v1/reports/{rep['id']}/transmit", headers=H).status_code == 501
+
+    actions = {a["action"] for a in client.get("/api/v1/audit", headers=H).json()}
+    assert {"ingest", "review_confirm", "prepare", "approve", "transmit_attempt"} <= actions
+
+
+def test_stale_report_cannot_be_approved(client, biz):
+    client.post(f"/api/v1/businesses/{biz}/income", headers=H, json={"doc_date": "2026-01-10", "pre_vat_amount": 1000})
+    rep = client.post(f"/api/v1/businesses/{biz}/reports", headers=H,
+                      params={"kind": "income_tax_advance", "year": 2026, "month": 1}).json()
+    assert rep["payload"]["gross_advance"] == 50.0
+    client.post(f"/api/v1/businesses/{biz}/income", headers=H, json={"doc_date": "2026-02-10", "pre_vat_amount": 1000})
+    r = client.post(f"/api/v1/reports/{rep['id']}/approve", headers=H, json=APPROVER)
+    assert r.status_code == 409
+    assert client.get(f"/api/v1/reports/{rep['id']}", headers=H).json()["status"] == "superseded"
+
+
+def test_openai_requires_consent(client, biz):
+    r = client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H,
+                    json={"text": HEB_INVOICE, "extractor": "openai"})
+    assert r.status_code == 403
+
+
+def test_review_blocks_unfixed_errors_and_accepts_corrections(client, biz):
+    bad = HEB_INVOICE.replace("513456780", "513456789")
+    d = client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H, json={"text": bad}).json()
+    assert d["status"] == "pending_review"
+    r = client.post(f"/api/v1/documents/{d['id']}/review", headers=H, json={"action": "confirm", "reviewer": "x"})
+    assert r.status_code == 409
+    fixed = {**d["extracted"], "vendor_id": "513456780"}
+    r = client.post(f"/api/v1/documents/{d['id']}/review", headers=H,
+                    json={"action": "confirm", "reviewer": "x", "corrections": fixed})
+    assert r.status_code == 200 and r.json()["decision"]["deductible_vat"] == 180.0
+
+
+def test_annual_estimate_and_unified_file(client, biz):
+    client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H, json={"text": HEB_INVOICE})
+    client.post(f"/api/v1/businesses/{biz}/income", headers=H, json={"doc_date": "2026-03-10", "pre_vat_amount": 120_000})
+    rep = client.post(f"/api/v1/businesses/{biz}/reports", headers=H,
+                      params={"kind": "annual_estimate", "year": 2026, "credit_points": 2.25}).json()
+    p = rep["payload"]
+    assert p["business_profit"] == 119_000.0
+    assert any("לא אומתה" in w for w in p["warnings"])
+
+    r = client.get(f"/api/v1/businesses/{biz}/unified-file", headers=H, params={"year": 2026})
+    assert r.status_code == 200
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    lines = z.read("BKMVDATA.TXT").decode("iso-8859-8").strip().split("\r\n")
+    assert lines[0].startswith("A100") and lines[-1].startswith("Z900")
+    assert sum(ln.startswith("C100") for ln in lines) == 2
+
+
+def test_privacy_export_and_purge(client, biz):
+    client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H, json={"text": HEB_INVOICE})
+    exp = client.get(f"/api/v1/businesses/{biz}/privacy/export", headers=H).json()
+    assert exp["documents"][0]["raw_text"]
+    assert client.post(f"/api/v1/businesses/{biz}/privacy/purge-raw", headers=H).json()["purged_documents"] == 1
+    exp = client.get(f"/api/v1/businesses/{biz}/privacy/export", headers=H).json()
+    assert exp["documents"][0]["raw_text"] is None
+    assert exp["documents"][0]["decision"]  # רשומת החשבונאות נשמרת
+
+
+def test_missing_allocation_can_be_confirmed_without_vat_deduction(client, biz):
+    text = (SAMPLES / "fuel_invoice_no_allocation.txt").read_text(encoding="utf-8")
+    d = client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H, json={"text": text}).json()
+    assert d["status"] == "pending_review"
+    r = client.post(f"/api/v1/documents/{d['id']}/review", headers=H, json={"action": "confirm", "reviewer": "x"})
+    assert r.status_code == 200
+    assert r.json()["decision"]["deductible_vat"] == 0.0
