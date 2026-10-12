@@ -19,12 +19,43 @@ _DATE_RES = [
     (re.compile(r"(\d{1,2})[/.](\d{1,2})[/.](\d{4})"), ("d", "m", "y")),
     (re.compile(r"(\d{1,2})[/.](\d{1,2})[/.](\d{2})(?!\d)"), ("d", "m", "yy")),
 ]
-_TOTAL_RE = re.compile(rf"(?:סה{_Q}?כ\s*(?:לתשלום|כולל\s*מע{_Q}?מ)|לתשלום|סך\s*הכל\s*לתשלום|(?i:total)(?!\s*vat))\s*[:₪]?\s*₪?\s*{_NUM}")
-_TOTAL_FALLBACK_RE = re.compile(rf"סה{_Q}?כ\s*[:₪]?\s*₪?\s*{_NUM}")
-_PRE_RE = re.compile(rf"(?:לפני\s*מע{_Q}?מ|חייב\s*במע{_Q}?מ|סה{_Q}?כ\s*ללא\s*מע{_Q}?מ|(?i:subtotal|before\s*vat))\s*[:₪]?\s*₪?\s*{_NUM}")
-_VAT_RE = re.compile(rf"(?<!לפני\s)(?<!ללא\s)(?<!במ)(?:מע{_Q}?מ|(?i:VAT)(?!\s*ID|\s*No))\s*(?:\(?\s*\d{{1,2}}(?:\.\d+)?\s*%\s*\)?)?\s*[:₪]?\s*₪?\s*{_NUM}")
+_TOTAL_RE = re.compile(rf"(?:סה{_Q}?כ\s*(?:לתשלום|כולל\s*מע{_Q}?מ)|לתשלום|סך\s*הכל\s*לתשלום|(?i:total)(?!\s*vat))\s*[:₪$€£]?\s*[₪$€£]?\s*{_NUM}")
+_TOTAL_FALLBACK_RE = re.compile(rf"סה{_Q}?כ\s*[:₪$€£]?\s*[₪$€£]?\s*{_NUM}")
+_PRE_RE = re.compile(rf"(?:לפני\s*מע{_Q}?מ|חייב\s*במע{_Q}?מ|סה{_Q}?כ\s*ללא\s*מע{_Q}?מ|(?i:subtotal|before\s*vat))\s*[:₪$€£]?\s*[₪$€£]?\s*{_NUM}")
+_VAT_RE = re.compile(rf"(?<!לפני\s)(?<!ללא\s)(?<!במ)(?:מע{_Q}?מ|(?i:VAT)(?!\s*ID|\s*No))\s*(?:\(?\s*\d{{1,2}}(?:\.\d+)?\s*%\s*\)?)?\s*[:₪$€£]?\s*[₪$€£]?\s*{_NUM}")
 
 _NOT_VENDOR = re.compile(rf"חשבונית|קבלה|תאריך|(?<![במ])ע{_Q}?מ\b|(?<![במ])ע\.מ|ח{_Q}?פ|ח\.פ|עוסק|סה{_Q}?כ|מע{_Q}?מ|לתשלום|הקצאה|^\W*$")
+
+
+_CASH = re.compile(r"מזומן|\bcash\b", re.I)
+_CARD = re.compile(r"אשראי|ויזה|מאסטרקארד|ישראכרט|אמריקן\s*אקספרס|\bvisa\b|master\s*card|credit\s*card", re.I)
+_BANK = re.compile(r"העברה\s*בנקאית|בנק\s*הפועלים|\bbit\b|ביט\b|bank\s*transfer|wire", re.I)
+_CHECK = re.compile(r"שיק|צ'ק|\bcheque?\b", re.I)
+_FOREIGN_NAME = re.compile(r"\b(inc|ltd|llc|gmbh|corp|limited|plc|s\.?a\.?|b\.?v\.?)\b\.?", re.I)
+_HEB = re.compile(r"[\u0590-\u05ff]")
+
+
+def _payment_method(text: str) -> str:
+    """אם מופיעים כמה אמצעים — האשראי/הבנק גוברים (מזומן מוזכר לעיתים כחלופה שלא נבחרה)."""
+    if _CARD.search(text):
+        return "credit_card"
+    if _BANK.search(text):
+        return "bank"
+    if _CHECK.search(text):
+        return "check"
+    if _CASH.search(text):
+        return "cash"
+    return "unknown"
+
+
+def _currency(text: str) -> str:
+    if re.search(r"\$|\bUSD\b|דולר", text):
+        return "USD"
+    if re.search(r"€|\bEUR\b|אירו", text):
+        return "EUR"
+    if re.search(r"£|\bGBP\b|ליש\"ט", text):
+        return "GBP"
+    return "ILS"
 
 
 def _num(s: str) -> float:
@@ -83,6 +114,8 @@ def extract(text: str) -> ExtractedDocument:
 
     doc_type = _doc_type(text)
     doc_date = _date(text)
+    currency = _currency(text)
+    foreign = currency != "ILS" or bool(vendor_name and _FOREIGN_NAME.search(vendor_name) and not _HEB.search(vendor_name))
     found = [doc_type != "unknown", vendor_name, vendor_id, doc_date, total]
     confidence = 0.9 * sum(bool(x) for x in found) / len(found)
     # חשבונית מס בלי פירוט לפני מע"מ ומע"מ: אי אפשר לאמת את החישוב, ולכן לא מאשרים אוטומטית
@@ -99,6 +132,7 @@ def extract(text: str) -> ExtractedDocument:
         vat_amount=vat,
         total_amount=total,
         allocation_number=alloc.group(1) if alloc else None,
+        currency=currency, payment_method=_payment_method(text), is_foreign_vendor=foreign,
         line_items=line_items[:20],
         extraction_confidence=round(confidence, 3),
     )

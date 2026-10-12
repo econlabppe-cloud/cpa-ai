@@ -133,17 +133,25 @@ def build_home(s: Session, biz: Business, today: date | None = None) -> dict:
                       "cta": {"label": "לבנק", "view": "bank"}})
     if not docs:
         tasks.append({"id": "first_doc", "priority": 4, "title": "העלו את החשבונית הראשונה",
-                      "detail": "גררו קובץ, העבירו במייל או שלחו בווטסאפ", "cta": {"label": "להעלאה", "view": "home"}})
+                      "detail": "גררו קובץ, העבירו במייל או שלחו בווטסאפ", "cta": {"label": "להעלאה", "view": "home", "anchor": "drop"}})
     if not inbound_address(biz):
         tasks.append({"id": "setup_email", "priority": 4, "title": "חברו מייל כדי שחשבוניות ייקלטו לבד",
-                      "detail": "הגדרה חד-פעמית בשרת", "cta": {"label": "להגדרות", "view": "settings"}})
+                      "detail": "הגדרה חד-פעמית בשרת", "cta": {"label": "להגדרות", "view": "home", "anchor": "channels"}})
     if not biz.whatsapp_phone:
         tasks.append({"id": "setup_whatsapp", "priority": 4, "title": "חברו את הווטסאפ שלכם",
                       "detail": "אפשר יהיה לשלוח קבלה בתמונה ולקבל תשובה מיד",
-                      "cta": {"label": "להגדרות", "view": "settings"}})
+                      "cta": {"label": "להגדרות", "view": "home", "anchor": "channels"}})
     if biz.advance_rate_percent == 0 and any(d.direction == "income" for d in docs):
         tasks.append({"id": "advance_rate", "priority": 4, "title": "הגדירו שיעור מקדמות",
-                      "detail": "בלי זה דוח המקדמות יהיה 0 ₪", "cta": {"label": "להגדרות", "view": "settings"}})
+                      "detail": "בלי זה דוח המקדמות יהיה 0 ₪", "cta": {"label": "להגדרות", "view": "home", "anchor": "channels"}})
+    days_to_year_end = (date(today.year, 12, 31) - today).days
+    year_income = sum(d.decision.get("pre_vat_amount") or 0.0 for d in docs
+                      if d.direction == "income" and d.status == "confirmed" and d.doc_date and d.doc_date.year == today.year)
+    if days_to_year_end <= 60 and year_income > 0:
+        tasks.append({"id": "year_end", "priority": 3,
+                      "title": f"סוף שנת המס בעוד {days_to_year_end} ימים — זמן לתכנון מס",
+                      "detail": "הפקדות לפנסיה וקרן השתלמות, תרומות ורכישת ציוד צריכים להתבצע עד 31.12",
+                      "cta": {"label": "ליועץ", "view": "more", "anchor": "m-advisor"}})
     tasks.sort(key=lambda t: t["priority"])
 
     next_start = p_end + timedelta(days=1)
@@ -169,6 +177,7 @@ def build_home(s: Session, biz: Business, today: date | None = None) -> dict:
         "all_clear": not any(t["priority"] <= 3 for t in tasks),
         "deadlines": deadlines,
         "deadline_note": {"verified": data.FILING_DAY.source.verified, "text": data.FILING_DAY.source.note},
+        "days_to_year_end": days_to_year_end,
         "counts": {"pending": len(pending), "bulk_ready": len(ready), "documents": len(docs),
                    "bank_open": len(open_tx)},
     }

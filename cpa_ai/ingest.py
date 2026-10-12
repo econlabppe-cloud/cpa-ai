@@ -53,6 +53,33 @@ def html_to_text(raw: str) -> str:
     return "\n".join(re.sub(r"[ \t]+", " ", ln).strip() for ln in raw.splitlines() if ln.strip())
 
 
+def sniff(data: bytes) -> tuple[str | None, str]:
+    """סוג הקובץ לפי התוכן, לא לפי מה שהשולח טוען (שם קובץ או Content-Type ניתנים לזיוף).
+    מחזיר (סוג, mime בטוח). svg ו-html נחשבים טקסט, כך שלעולם לא יוגשו כדפים או תמונות פעילים."""
+    if data[:5] == b"%PDF-":
+        return "pdf", "application/pdf"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image", "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image", "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image", "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image", "image/webp"
+    head = data[:4000]
+    if b"\x00" not in head:
+        try:
+            head.decode("utf-8")
+            return "text", "text/plain"
+        except UnicodeDecodeError:
+            try:
+                data[:4000].decode("cp1255")
+                return "text", "text/plain"
+            except UnicodeDecodeError:
+                pass
+    return None, "application/octet-stream"
+
+
 MIN_EMAIL_IMAGE_BYTES = 10_000  # לוגואים ופיקסלי מעקב בחתימות מייל קטנים מזה
 
 
@@ -135,10 +162,13 @@ def ingest(s: Session, biz: Business, item: IngestItem, actor: str, mode: str = 
     handled = False
     strict = item.source == "email"
     # תמונות אחרונות: במייל הן לרוב לוגו, ונדלג עליהן אם כבר נקלט מסמך אחר באותו מייל
-    for att in sorted(item.attachments, key=lambda a: (a.mime or "").lower().startswith("image/")):
-        mime = (att.mime or "").lower()
+    prepared = []
+    for att in item.attachments:
+        kind, safe_mime = sniff(att.data)
+        prepared.append((kind, Attachment(att.filename, safe_mime, att.data)))
+    for kind, att in sorted(prepared, key=lambda p: p[0] == "image"):
         digest = storage.sha256(att.data)
-        if mime == "application/pdf" or att.filename.lower().endswith(".pdf"):
+        if kind == "pdf":
             text, info = extract_pdf_text(att.data)
             if not text:
                 _store_one(s, biz, item, ExtractedDocument(doc_type="unknown", extraction_confidence=0.0),
@@ -149,19 +179,21 @@ def ingest(s: Session, biz: Business, item: IngestItem, actor: str, mode: str = 
                 force = None if info["reliable"] else f"{info['reason']} — לבדיקה"
                 _store_one(s, biz, item, e, f"pdf+{extractor}", text, att, digest, result, actor, force_review=force)
             handled = True
-        elif mime.startswith("text/") or att.filename.lower().endswith((".txt", ".htm", ".html")):
+        elif kind == "text":
             raw = att.data.decode("utf-8", errors="replace")
-            text = html_to_text(raw) if "html" in mime or att.filename.lower().endswith((".htm", ".html")) else raw
+            text = html_to_text(raw) if re.search(r"(?i)<\s*(html|body|div|p|table|br)\b", raw) else raw
             e, extractor = extraction.extract_text(text, mode, biz.llm_consent)
             if _looks_like_invoice(e, strict):
                 _store_one(s, biz, item, e, extractor, text, att, digest, result, actor)
                 handled = True
-        elif mime.startswith("image/"):
+            else:
+                result.notes.append(f"לא זוהתה חשבונית בקובץ: {att.filename}")
+        elif kind == "image":
             if strict and (handled or len(att.data) < MIN_EMAIL_IMAGE_BYTES):
                 result.notes.append(f"תמונה במייל דולגה (כנראה לוגו): {att.filename}")
                 continue
             if biz.llm_consent and openai_llm.available():
-                e = openai_llm.extract(image=att.data, mime=mime)
+                e = openai_llm.extract(image=att.data, mime=att.mime)
                 _store_one(s, biz, item, e, "openai-vision", None, att, digest, result, actor)
             else:
                 _store_one(s, biz, item, ExtractedDocument(doc_type="unknown", extraction_confidence=0.0),

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from sqlalchemy import select
 
 import threading
@@ -19,33 +19,45 @@ from . import services
 from .db import AuditLog, Business, Document, Report, make_sessionmaker
 from .integrations.addresses import inbound_address
 from .rules import data
+from .security import Principal, RateLimiter, parse_users
 from .schemas import (ApprovalIn, BusinessIn, BusinessOut, DocumentOut, IncomeIn, ProcessTextIn, ReportOut,
-                      ReviewIn)
+                      ReviewIn, WhatIfIn)
 
 STATIC = Path(__file__).parent / "static"
+SAFE_SERVE_MIMES = {"application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp", "text/plain"}
 MAX_UPLOAD = 10 * 1024 * 1024
 
 
+DEFAULT_RATE_LIMITS = {"api": (600, 60), "inbound": (120, 60), "authfail": (20, 300)}
+
+
 def create_app(database_url: str | None = None, api_key: str | None = None,
-               users: dict[str, str] | None = None) -> FastAPI:
-    """users: {מפתח: שם} — כשמוגדר, שם המשתמש ביומן נגזר מהמפתח ולא מכותרת שהלקוח שולח.
-    api_key: מפתח משותף יחיד (השם ביומן הוא מה שנשלח בכותרת X-Actor)."""
-    app = FastAPI(title="CPA-AI — הכנת דוחות לעוסק מורשה", version="1.0.0")
+               users: dict | None = None, rate_limits: dict | None = None) -> FastAPI:
+    """users: {מפתח: "שם"} (מנהל) או {מפתח: {"name","role","businesses"}}. השם ביומן נגזר מהמפתח ולא
+    מכותרת שהלקוח שולח. api_key: מפתח משותף יחיד (מנהל; השם הוא מה שנשלח ב-X-Actor)."""
     SessionLocal = make_sessionmaker(database_url)
-    app.state.SessionLocal = SessionLocal  # לשימוש עובדי רקע ובדיקות
-    from .integrations import commands as wa_commands
-    app.state.wa_commands = wa_commands.handle
-    from .integrations.email_imap import ImapConfig, run_forever
-    imap_cfg = ImapConfig.from_env()
-    if imap_cfg:
-        threading.Thread(target=run_forever, args=(SessionLocal, imap_cfg, int(os.getenv("CPA_AI_IMAP_INTERVAL", "120"))),
-                         daemon=True, name="imap-poller").start()
+    limits = {**DEFAULT_RATE_LIMITS, **(rate_limits or {})}
+    limiter = RateLimiter()
+    trust_proxy = os.getenv("CPA_AI_TRUST_PROXY") == "1"
+
+    def client_ip(request: Request) -> str:
+        # X-Forwarded-For ניתן לזיוף; מכבדים אותו רק מאחורי פרוקסי שהוגדר כאמין
+        if trust_proxy:
+            fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            if fwd:
+                return fwd
+        return request.client.host if request.client else "unknown"
+
+    def too_many(wait: float) -> HTTPException:
+        return HTTPException(429, "יותר מדי בקשות — נסו שוב בעוד רגע", headers={"Retry-After": str(int(wait) + 1)})
+
     if users is None:
         users = json.loads(os.getenv("CPA_AI_USERS", "") or "{}")
-    if not users:
+    principals = parse_users(users)
+    if not principals:
         shared = api_key if api_key is not None else os.getenv("CPA_AI_API_KEY", "")
-        users = {shared: None} if shared else {}
-    if not users and os.getenv("CPA_AI_ALLOW_INSECURE") != "1":
+        principals = {shared: Principal(None, "admin", None)} if shared else {}
+    if not principals and os.getenv("CPA_AI_ALLOW_INSECURE") != "1":
         raise RuntimeError("לא הוגדר CPA_AI_API_KEY (או CPA_AI_USERS). לפיתוח מקומי בלבד: CPA_AI_ALLOW_INSECURE=1")
 
     def session():
@@ -55,15 +67,119 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
         finally:
             s.close()
 
-    def actor(x_api_key: Optional[str] = Header(None), x_actor: Optional[str] = Header(None)) -> str:
+    def authenticate(request: Request, x_api_key: Optional[str], x_actor: Optional[str]) -> Principal:
+        cached = getattr(request.state, "principal", None)
+        if cached is not None:
+            return cached
+        ip = client_ip(request)
+        wait = limiter.peek(f"authfail:{ip}", *limits["authfail"])
+        if wait is not None:
+            raise too_many(wait)  # נעילה אחרי ניסיונות כושלים חוזרים — גם למפתח נכון, מאותה כתובת
         # שמות בעברית מגיעים מקודדי URL (כותרות HTTP מוגבלות ל-ISO-8859-1)
         claimed = unquote(x_actor or "anonymous")[:200]
-        if not users:
-            return claimed  # מצב פיתוח מפורש בלבד (CPA_AI_ALLOW_INSECURE=1)
-        for k, name in users.items():
-            if x_api_key and secrets.compare_digest(x_api_key, k):
-                return name or claimed  # מפתח אישי — השם נגזר מהמפתח; מפתח משותף — הכותרת
-        raise HTTPException(401, "מפתח API חסר או שגוי")
+        found: Principal | None = None
+        if not principals:
+            found = Principal(claimed, "admin", None)  # מצב פיתוח מפורש בלבד (CPA_AI_ALLOW_INSECURE=1)
+        else:
+            for k, p in principals.items():
+                if x_api_key and secrets.compare_digest(x_api_key, k):
+                    found = p if p.name else p.with_name(claimed)  # מפתח אישי — השם מהמפתח
+                    break
+        if found is None:
+            limiter.hit(f"authfail:{ip}", *limits["authfail"])
+            raise HTTPException(401, "מפתח API חסר או שגוי")
+        request.state.principal = found
+        return found
+
+    def principal(request: Request, x_api_key: Optional[str] = Header(None),
+                  x_actor: Optional[str] = Header(None)) -> Principal:
+        return authenticate(request, x_api_key, x_actor)
+
+    def actor(p: Principal = Depends(principal)) -> str:
+        return p.name or "anonymous"
+
+    def require_admin(p: Principal = Depends(principal)) -> Principal:
+        if not p.is_admin:
+            raise HTTPException(403, "פעולה למנהל המערכת בלבד")
+        return p
+
+    def require_signer(p: Principal = Depends(principal)) -> Principal:
+        if not p.can_sign:
+            raise HTTPException(403, "אישור והגשת דוח שמורים למייצג מורשה (רו\"ח, יועץ מס או עו\"ד)")
+        return p
+
+    OPEN_PREFIXES = ("/api/v1/inbound/", "/api/v1/health")
+
+    def scope(request: Request, x_api_key: Optional[str] = Header(None), x_actor: Optional[str] = Header(None),
+              s=Depends(session)) -> None:
+        """שער הרשאה לכל נקודת קצה: מזהה את העסק שהבקשה נוגעת בו (מהנתיב או מהישות) ובודק גישה.
+        נקודה חדשה שמקבלת bid/did/rid/tx_id מוגנת אוטומטית. 404 ולא 403: לא מגלים שעסק קיים."""
+        path = request.url.path
+        if not path.startswith("/api/v1/") or path.startswith(OPEN_PREFIXES):
+            return
+        p = authenticate(request, x_api_key, x_actor)
+        pp = request.path_params
+
+        def as_int(v):
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+
+        bid = as_int(pp.get("bid"))
+        if bid is None:
+            from .db import BankTransaction, VendorRule
+            model, key = (Document, "did") if "did" in pp else (BankTransaction, "tx_id") if "tx_id" in pp else \
+                (VendorRule if "/vendor-rules/" in path else Report, "rid") if "rid" in pp else (None, None)
+            if model is not None:
+                ent = s.get(model, as_int(pp.get(key)) or 0)
+                bid = ent.business_id if ent is not None else None
+        if bid is not None and not p.can_access(bid):
+            services.audit(s, p.name or "anonymous", "access_denied", "business", bid,
+                           business_id=bid, method=request.method, path=path)
+            s.commit()
+            raise HTTPException(404, "לא נמצא")
+
+    app = FastAPI(title="CPA-AI — הכנת דוחות לעוסק מורשה", version="1.0.0", dependencies=[Depends(scope)])
+    app.state.SessionLocal = SessionLocal  # לשימוש עובדי רקע ובדיקות
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        path = request.url.path
+        ip = client_ip(request)
+        if path.startswith("/api/v1/inbound/"):
+            bucket, key = "inbound", f"inbound:{ip}"
+        elif path.startswith("/api/") and path != "/api/v1/health":
+            # לפי כתובת, לא לפי המפתח שבכותרת: מפתח אקראי חדש בכל בקשה היה מאפס את המונה ומנפח זיכרון
+            bucket, key = "api", f"api:{ip}"
+        else:
+            bucket = key = None
+        if bucket:
+            wait = limiter.hit(key, *limits[bucket])
+            if wait is not None:
+                resp = JSONResponse({"detail": "יותר מדי בקשות — נסו שוב בעוד רגע"}, status_code=429,
+                                    headers={"Retry-After": str(int(wait) + 1)})
+                return _secure(resp, request, path)
+        return _secure(await call_next(request), request, path)
+
+    def _secure(resp, request: Request, path: str):
+        h = resp.headers
+        h.setdefault("X-Content-Type-Options", "nosniff")
+        h.setdefault("X-Frame-Options", "DENY")
+        h.setdefault("Referrer-Policy", "no-referrer")
+        h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        if path.startswith("/api/"):
+            h.setdefault("Cache-Control", "no-store")
+        if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+            h.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        return resp
+    from .integrations import commands as wa_commands
+    app.state.wa_commands = wa_commands.handle
+    from .integrations.email_imap import ImapConfig, run_forever
+    imap_cfg = ImapConfig.from_env()
+    if imap_cfg:
+        threading.Thread(target=run_forever, args=(SessionLocal, imap_cfg, int(os.getenv("CPA_AI_IMAP_INTERVAL", "120"))),
+                         daemon=True, name="imap-poller").start()
 
     @app.exception_handler(services.NotFound)
     async def _nf(_: Request, e: Exception):
@@ -97,11 +213,25 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
     # --- UI ------------------------------------------------------------------
     @app.get("/", include_in_schema=False)
     def index():
-        return FileResponse(STATIC / "index.html")
+        """הדף נשלח עם nonce חדש לכל בקשה: רק הסקריפטים שלנו רצים, וגם אם מוזרק HTML הוא לא יריץ קוד."""
+        nonce = secrets.token_urlsafe(16)
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        html = html.replace("<script>", f'<script nonce="{nonce}">').replace("<style>", f'<style nonce="{nonce}">')
+        csp = ("default-src 'none'; "
+               f"script-src 'nonce-{nonce}'; style-src-elem 'nonce-{nonce}'; style-src-attr 'unsafe-inline'; "
+               "connect-src 'self'; img-src 'self' data: blob:; font-src 'self'; "
+               "base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'")
+        return HTMLResponse(html, headers={"Content-Security-Policy": csp, "Cache-Control": "no-store"})
 
     @app.get("/api/v1/health")
     def health():
-        return {"status": "ok", "auth_required": bool(users)}
+        return {"status": "ok", "auth_required": bool(principals)}
+
+    @app.get("/api/v1/me")
+    def me(p: Principal = Depends(principal)):
+        """מי אני ומה מותר לי — כדי שהממשק יציג רק פעולות שמותרות."""
+        return {"name": p.name, "role": p.role, "is_admin": p.is_admin, "can_sign": p.can_sign,
+                "businesses": sorted(p.businesses) if p.businesses is not None else None}
 
     @app.get("/api/v1/rules")
     def rules():
@@ -121,14 +251,14 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
 
     # --- עסקים -----------------------------------------------------------------
     @app.post("/api/v1/businesses", response_model=BusinessOut, status_code=201)
-    def create_business(body: BusinessIn, s=Depends(session), who=Depends(actor)):
+    def create_business(body: BusinessIn, s=Depends(session), who=Depends(actor), _admin=Depends(require_admin)):
         if s.scalar(select(Business).where(Business.vat_id == body.vat_id.zfill(9))):
             raise services.Conflict("עסק עם מספר עוסק זה כבר קיים")
         return biz_out(services.create_business(s, body, who))
 
     @app.get("/api/v1/businesses", response_model=list[BusinessOut])
-    def list_businesses(s=Depends(session), who=Depends(actor)):
-        return [biz_out(b) for b in s.scalars(select(Business).order_by(Business.id))]
+    def list_businesses(s=Depends(session), who=Depends(actor), p: Principal = Depends(principal)):
+        return [biz_out(b) for b in s.scalars(select(Business).order_by(Business.id)) if p.can_access(b.id)]
 
     @app.get("/api/v1/businesses/{bid}", response_model=BusinessOut)
     def get_business(bid: int, s=Depends(session), who=Depends(actor)):
@@ -197,8 +327,9 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
     @app.post("/api/v1/businesses/{bid}/reports", response_model=ReportOut, status_code=201)
     def prepare(bid: int, kind: Literal["vat_period", "income_tax_advance", "annual_estimate"],
                 year: int = Query(ge=2015, le=2100), month: Optional[int] = Query(None, ge=1, le=12),
-                credit_points: float = Query(2.25, ge=0, le=20), s=Depends(session), who=Depends(actor)):
-        return rep_out(services.prepare_report(s, bid, kind, year, month, credit_points, who))
+                credit_points: float = Query(2.25, ge=0, le=20), donations: float = Query(0, ge=0),
+                carried_loss: float = Query(0, ge=0), s=Depends(session), who=Depends(actor)):
+        return rep_out(services.prepare_report(s, bid, kind, year, month, credit_points, who, donations, carried_loss))
 
     @app.get("/api/v1/businesses/{bid}/reports", response_model=list[ReportOut])
     def list_reports(bid: int, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0),
@@ -212,7 +343,7 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
         return rep_out(services.get(s, Report, rid))
 
     @app.post("/api/v1/reports/{rid}/approve", response_model=ReportOut)
-    def approve(rid: int, body: ApprovalIn, s=Depends(session), who=Depends(actor)):
+    def approve(rid: int, body: ApprovalIn, s=Depends(session), who=Depends(actor), _signer=Depends(require_signer)):
         return rep_out(services.approve_report(s, rid, body, who))
 
     @app.post("/api/v1/reports/{rid}/transmit")
@@ -418,13 +549,20 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
             raise HTTPException(404, "למסמך אין קובץ מקור")
         try:
             blob = storage.read(doc.attachment_path)
+        except storage.StorageError as e:
+            raise HTTPException(503, f"לא ניתן לפענח את קובץ המקור: {e}")
         except (OSError, ValueError):
             raise HTTPException(404, "קובץ המקור לא נמצא באחסון")
         services.audit(s, who, "download_original", "document", doc.id)
         s.commit()
         name = quote(doc.attachment_name or f"document-{doc.id}")
-        return Response(blob, media_type=doc.attachment_mime or "application/octet-stream",
-                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
+        # רק סוגים שאומתו לפי תוכן בעת הקליטה. כל השאר מוגש כקובץ בינארי להורדה, לעולם לא כדף.
+        safe = doc.attachment_mime if doc.attachment_mime in SAFE_SERVE_MIMES else "application/octet-stream"
+        return Response(blob, media_type=safe, headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{name}",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Cache-Control": "private, no-store"})
 
     @app.get("/api/v1/businesses/{bid}/accountant-package")
     def accountant_package(bid: int, year: int = Query(ge=2015, le=2100), month: int = Query(ge=1, le=12),
@@ -457,19 +595,32 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
 
     @app.post("/api/v1/reports/{rid}/mark-submitted", response_model=ReportOut)
     def mark_submitted(rid: int, reference: str = Query(min_length=1, max_length=100), s=Depends(session),
-                       who=Depends(actor)):
+                       who=Depends(actor), _signer=Depends(require_signer)):
         return rep_out(services.mark_submitted(s, rid, reference, who))
 
     # --- יועץ תכנון מס (לגיטימי בלבד; הפלט להכנה לשיחה עם מייצג) -------------------
     @app.get("/api/v1/businesses/{bid}/advisor")
     def advisor(bid: int, year: int = Query(ge=2015, le=2100), credit_points: float = Query(2.25, ge=0, le=20),
                 existing_pension: float = Query(0, ge=0), existing_keren: float = Query(0, ge=0),
-                material_holder: bool = False, s=Depends(session), who=Depends(actor)):
+                material_holder: bool = False, projected_profit: Optional[float] = None,
+                carried_loss: float = Query(0, ge=0), donations: float = Query(0, ge=0),
+                s=Depends(session), who=Depends(actor)):
         from .advisor import advise
         biz = services.get(s, Business, bid)
         services.audit(s, who, "advisor_run", "business", biz.id, year=year)
         s.commit()
-        return advise(s, biz, year, credit_points, existing_pension, existing_keren, material_holder)
+        return advise(s, biz, year, credit_points, existing_pension, existing_keren, material_holder,
+                      projected_profit=projected_profit, carried_loss=carried_loss, donations=donations)
+
+    @app.post("/api/v1/businesses/{bid}/advisor/what-if")
+    def advisor_what_if(bid: int, body: WhatIfIn, s=Depends(session), who=Depends(actor)):
+        from .advisor import what_if
+        biz = services.get(s, Business, bid)
+        services.audit(s, who, "what_if_run", "business", biz.id, year=body.year,
+                       scenarios=[x.get("type") for x in body.scenarios])
+        s.commit()
+        return what_if(s, biz, body.year, body.credit_points, body.existing_pension, body.existing_keren,
+                       body.carried_loss, body.donations, body.scenarios, body.projected_profit)
 
     # --- פרטיות וביקורת -----------------------------------------------------------
     @app.get("/api/v1/businesses/{bid}/privacy/export")
@@ -481,11 +632,11 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
         return {"purged_documents": services.privacy_purge_raw(s, bid, who)}
 
     @app.get("/api/v1/audit/verify")
-    def audit_verify(s=Depends(session), who=Depends(actor)):
+    def audit_verify(s=Depends(session), who=Depends(actor), _admin=Depends(require_admin)):
         return services.verify_audit(s)
 
     @app.get("/api/v1/audit")
-    def audit_log(limit: int = Query(100, le=1000), s=Depends(session), who=Depends(actor)):
+    def audit_log(limit: int = Query(100, le=1000), s=Depends(session), who=Depends(actor), _admin=Depends(require_admin)):
         rows = s.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit))
         return [{c.name: getattr(a, c.name) for c in AuditLog.__table__.columns} for a in rows]
 

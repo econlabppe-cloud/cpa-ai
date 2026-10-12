@@ -27,6 +27,10 @@ class ExtractedDocument(BaseModel):
     allocation_number: Optional[str] = Field(None, description="מספר הקצאה (חשבוניות ישראל) אם מודפס")
     line_items: list[str] = Field(default_factory=list, description="תיאורי שורות הפריטים")
     category_hint: Optional[str] = Field(None, description="הצעה לקטגוריה; המנוע מחליט סופית")
+    currency: str = Field("ILS", description="מטבע החשבונית: ILS / USD / EUR / GBP")
+    payment_method: Literal["cash", "credit_card", "bank", "check", "unknown"] = Field(
+        "unknown", description="אמצעי תשלום כפי שמופיע במסמך")
+    is_foreign_vendor: bool = Field(False, description="ספק זר (ללא מספר עוסק ישראלי)")
     extraction_confidence: float = Field(0.0, ge=0, le=1, description="ביטחון בחילוץ השדות בלבד")
 
 
@@ -38,11 +42,15 @@ class TaxDecision(BaseModel):
     vat_amount: Optional[float]
     total_amount: Optional[float]
     vendor_id_valid: bool
+    currency: str = "ILS"
+    payment_method: str = "unknown"
+    is_foreign_vendor: bool = False
     income_tax_recognition: float
     recognized_expense: float
     vat_deduction_rate: float
     deductible_vat: float
     is_fixed_asset: bool
+    asset_class: Optional[str] = None
     confidence: float
     needs_human_review: bool
     findings: list[dict]
@@ -64,7 +72,7 @@ class BusinessOut(BusinessIn):
 
 
 class ProcessTextIn(BaseModel):
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=200_000)
     extractor: Literal["auto", "heuristic", "openai"] = "auto"
 
 
@@ -124,3 +132,14 @@ class ReportOut(BaseModel):
     submitted_at: Optional[datetime] = None
     submission_ref: Optional[str] = None
     created_at: datetime
+
+
+class WhatIfIn(BaseModel):
+    year: int = Field(ge=2015, le=2100)
+    credit_points: float = Field(2.25, ge=0, le=20)
+    existing_pension: float = Field(0.0, ge=0)
+    existing_keren: float = Field(0.0, ge=0)
+    carried_loss: float = Field(0.0, ge=0)
+    donations: float = Field(0.0, ge=0)
+    projected_profit: Optional[float] = Field(None, description="תחזית רווח שנתי; בלעדיה משתמשים ברווח עד היום")
+    scenarios: list[dict] = Field(min_length=1, max_length=10)

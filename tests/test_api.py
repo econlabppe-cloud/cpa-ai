@@ -188,7 +188,7 @@ def test_corporate_comparison_is_partial_and_lists_exclusions():
     from cpa_ai.advisor.planner import corporate_comparison
     c = corporate_comparison(profit=400_000, year=2025, credit_points=2.25, material_holder=False)
     assert c["company_full_distribution"]["corp_tax"] == 92_000
-    assert "ביטוח לאומי" in c["excluded"]
+    assert any("ביטוח לאומי" in x for x in c["excluded"])  # ביטוח לאומי של הבעלים בחברה אינו מחושב
     assert c["status"] == "needs_verification"
     assert c["basis"][0]["verified"] is False
 

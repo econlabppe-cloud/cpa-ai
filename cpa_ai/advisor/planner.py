@@ -9,7 +9,10 @@
 """
 from __future__ import annotations
 
+from datetime import date
+
 from ..reports.periodic import income_tax
+from ..tax_model import social_security
 from ..rules import data
 
 NOT_OFFERED = [
@@ -34,7 +37,7 @@ def _basis(*sources: data.Source) -> list[dict]:
 
 
 def marginal_rate(taxable: float, year: int) -> float:
-    ty = data.TAX_YEARS[year]
+    ty = data.tax_year(year)
     rate = ty.brackets[-1][1]
     for ceiling, r in ty.brackets:
         if taxable <= ceiling:
@@ -109,7 +112,9 @@ def corporate_comparison(profit: float, year: int, credit_points: float, materia
                                       "net": round(net_company_distributed, 2),
                                       "effective_rate": round(1 - net_company_distributed / profit, 4) if profit > 0 else 0.0},
         "difference_company_minus_individual": round(net_company_distributed - net_individual, 2),
-        "excluded": ["ביטוח לאומי", "מס יסף על הכנסה פסיבית", "רווחים צבורים", "עלויות הקמה ותחזוקה"],
+        "individual_social_security": round(social_security(profit)["total"], 2),
+        "excluded": ["ביטוח לאומי על משכורת/דיבידנד בחברה", "מס יסף על הכנסה פסיבית", "רווחים צבורים",
+                     "עלויות הקמה ותחזוקה"],
         "basis": _basis(c["corp_tax_rate"].source, c["dividend_rate_individual"].source),
         "status": _status(False),
     }
@@ -176,6 +181,11 @@ def build_plan(
     material_holder: bool,
     vat_blocked: dict,
     vehicle: dict,
+    today: date | None = None,
+    cash_docs: list[dict] | None = None,
+    foreign_docs: list[dict] | None = None,
+    input_vat_ytd: float = 0.0,
+    turnover_for_status: float | None = None,
 ) -> dict:
     # הניכוי מקטין את ההכנסה החייבת, ולכן המדרגה השולית נמדדת אחריו. מחשבים פעמיים לכל היותר.
     marginal = marginal_rate(max(profit, 0.0), year)
@@ -200,8 +210,9 @@ def build_plan(
             "estimated_annual_saving": pension["estimated_saving"],
             "details": pension,
             "actions": [
-                f"הפקדה נוספת בערוץ {'ניכוי' if pension['better_channel'] == 'deduction' else 'זיכוי'} "
-                "תעדיף את הערוץ בעל הערך הגבוה",
+                (f"ההפקדה תמולא קודם בערוץ {'הניכוי' if pension['better_channel'] == 'deduction' else 'הזיכוי'} "
+                 f"— הוא משתלם יותר: זיכוי של {data.PENSION_SELF_EMPLOYED['credit_percent'].value:.0%} מול ניכוי בשיעור המס השולי "
+                 f"({marginal:.0%})"),
                 "לבדוק מה כבר הופקד השנה בקופות ובביטוחים (הזנה כקלט)",
                 "לוודא שמדובר בהכנסה מזכה ובהפקדה לקופה מוכרת",
             ],
@@ -242,13 +253,28 @@ def build_plan(
             "id": "corporate_vs_individual",
             "title": "השוואה: עוסק מורשה מול חברה בע\"מ",
             "status": "needs_verification",
-            "estimated_annual_saving": corp["difference_company_minus_individual"],
+            # מידע בלבד: סכום שלילי (החברה מניבה פחות) לא מוצג כ"חיסכון". הכיוון מפורש בשורת הפעולה
+            "estimated_annual_saving": max(corp["difference_company_minus_individual"], 0.0),
             "details": corp,
-            "actions": ["לא להחליט על בסיס ההשוואה הזו בלבד — לכלול ביטוח לאומי ועלויות הקמה ותחזוקה"],
+            "actions": [
+                (f"בהנחות המודל (כל הרווח מחולק כדיבידנד) החברה מניבה נטו ₪{abs(corp['difference_company_minus_individual']):,.0f} "
+                 f"{'יותר' if corp['difference_company_minus_individual'] > 0 else 'פחות'} מעוסק מורשה, לפני ביטוח לאומי ועלויות"),
+                "לא להחליט על בסיס ההשוואה הזו בלבד — לכלול ביטוח לאומי ועלויות הקמה ותחזוקה"],
             "risk": "החלטה מבנית ארוכת טווח; מעבר לחברה כרוך בעלויות ובהשלכות משפטיות",
             "basis": corp["basis"],
         },
     ]
+    from . import extras
+    for extra in (
+        extras.year_end_calendar(year, today) if today else None,
+        extras.credit_points_review(credit_points),
+        extras.status_review(turnover_for_status if turnover_for_status is not None else turnover, input_vat_ytd, marginal),
+        extras.cash_discipline(cash_docs or []),
+        extras.foreign_invoices(foreign_docs or []),
+        extras.loss_carryforward(profit),
+    ):
+        if extra:
+            strategies.append(extra)
     if adv:
         strategies.append({
             "id": "advance_reduction",
@@ -262,6 +288,7 @@ def build_plan(
         })
 
     total = round(sum(s["estimated_annual_saving"] for s in strategies if s["id"] != "corporate_vs_individual"), 2)
+    strategies.sort(key=lambda s: -s["estimated_annual_saving"])  # מיון יציב
     return {
         "year": year,
         "marginal_rate": round(marginal, 4),

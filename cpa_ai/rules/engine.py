@@ -1,6 +1,7 @@
 """מנוע הכללים: מקבל עובדות שחולצו, מחזיר החלטת מס דטרמיניסטית עם עקבה משפטית."""
 from __future__ import annotations
 
+from .. import depreciation
 from ..schemas import ExtractedDocument, TaxDecision
 from . import checks, data
 from .checks import Finding, RuleTrace
@@ -49,8 +50,22 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
         rate = checks.vat_rate_for(extracted.doc_date)
         trace.apply("vat_rate", rate, data.VAT_RATE_SOURCE)
 
+    foreign = extracted.is_foreign_vendor
     pre, vat, total = extracted.pre_vat_amount, extracted.vat_amount, extracted.total_amount
-    if rate is not None:
+    if foreign:
+        # חשבונית זרה: בלי מע"מ ישראלי, ואין מספר עוסק ישראלי. הסכום נקבע בש"ח לפי שער ביום החיוב
+        total = total if total is not None else pre
+        pre, vat = total, 0.0
+        if total is None:
+            trace.add(Finding("TOTAL_MISSING", "error", "סכום כולל לא זוהה"))
+        if extracted.currency != "ILS":
+            trace.add(Finding("FOREIGN_CURRENCY", "warning",
+                              f"החשבונית ב-{extracted.currency}. יש להזין את הסכום בש\"ח לפי השער ביום החיוב "
+                              "(איזה שער נדרש לא אומת) ולשנות את המטבע ל-ILS לפני אישור"))
+        trace.add(Finding("FOREIGN_VAT_NOTE", "warning",
+                          "ספק זר: אין ניכוי מע\"מ תשומות. ייתכן שנדרשת חשבונית עצמית לדיווח מע\"מ (ייבוא שירותים) — "
+                          "מקורות סותרים, לבדיקת המייצג", data.FOREIGN_VAT_SOURCE.citation))
+    elif rate is not None:
         pre, vat, total, f = checks.check_amounts(pre, vat, total, rate, extracted.doc_type)
         trace.add(*f)
     elif total is None:
@@ -63,13 +78,15 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
                           "המסמך אינו חשבונית מס — לא ניתן לנכות ממנו מע\"מ תשומות", data.DOC_TYPE_SOURCE.citation))
 
     vendor_valid = checks.validate_israeli_id(extracted.vendor_id)
-    if not extracted.vendor_id:
+    if foreign:
+        vendor_valid = False  # אין מספר עוסק ישראלי; לא שגיאה
+    elif not extracted.vendor_id:
         sev = "error" if extracted.doc_type in data.VAT_DEDUCTIBLE_DOC_TYPES else "warning"
         trace.add(Finding("VENDOR_ID_MISSING", sev, "מספר עוסק של הספק לא זוהה"))
     elif not vendor_valid:
         trace.add(Finding("VENDOR_ID_INVALID", "error", f"ספרת הביקורת של מספר העוסק {extracted.vendor_id} שגויה"))
 
-    if extracted.doc_date is not None:
+    if extracted.doc_date is not None and not foreign:
         trace.add(*checks.check_allocation(extracted.doc_date, extracted.doc_type, pre, extracted.allocation_number))
 
     category, cat_finding = classify(extracted, category_override)
@@ -82,7 +99,15 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
                           category.source.citation))
 
     blocked_vat = any(f.code in {"ALLOCATION_MISSING", "ALLOCATION_MALFORMED", "VENDOR_ID_INVALID"} for f in trace.findings)
-    vat_ok = extracted.doc_type in data.VAT_DEDUCTIBLE_DOC_TYPES and not blocked_vat
+    vat_ok = extracted.doc_type in data.VAT_DEDUCTIBLE_DOC_TYPES and not blocked_vat and not foreign
+
+    cash_over = (extracted.payment_method == "cash" and total is not None and total >= data.CASH_LIMIT.value)
+    if cash_over:
+        lo, hi = data.CASH_PENALTY_RANGE
+        trace.add(Finding("CASH_LIMIT", "warning",
+                          f"תשלום במזומן של {total:,.0f} ₪ מעל התקרה בין עסקים ({data.CASH_LIMIT.value:,.0f} ₪). "
+                          f"קנס מדווח {lo:.0%}–{hi:.0%} וייתכן שההוצאה לא תוכר. הסף לא אומת (מקורות סותרים) — לבדיקת המייצג",
+                          data.CASH_LIMIT.source.citation))
     vat_rate_ded = category.vat_deduction if vat_ok else 0.0
     deductible_vat = round((vat or 0.0) * vat_rate_ded, 2)
     # מע"מ שאינו מנוכה הופך לחלק מעלות ההוצאה
@@ -99,6 +124,8 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
         or errors > 0
         or not category.source.verified
         or category.key == "unknown"
+        or cash_over
+        or any(f.code == "FOREIGN_CURRENCY" for f in trace.findings)
     )
 
     return TaxDecision(
@@ -109,11 +136,15 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
         vat_amount=vat,
         total_amount=total,
         vendor_id_valid=vendor_valid,
+        currency=extracted.currency,
+        payment_method=extracted.payment_method,
+        is_foreign_vendor=foreign,
         income_tax_recognition=category.income_tax_recognition,
         recognized_expense=recognized,
         vat_deduction_rate=round(vat_rate_ded, 4),
         deductible_vat=deductible_vat,
         is_fixed_asset=category.is_fixed_asset,
+        asset_class=depreciation.classify_asset(extracted.vendor_name, extracted.line_items) if category.is_fixed_asset else None,
         confidence=round(confidence, 3),
         needs_human_review=needs_review,
         findings=[f.as_dict() for f in trace.findings],

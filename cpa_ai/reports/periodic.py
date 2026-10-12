@@ -130,9 +130,7 @@ def build_income_tax_advance(s: Session, biz: Business, start: date, end: date) 
 
 
 def income_tax(taxable: float, year: int, credit_points: float) -> tuple[float, list[dict], data.TaxYear]:
-    if year not in data.TAX_YEARS:
-        raise ValueError(f"אין טבלת מס לשנת {year}")
-    ty = data.TAX_YEARS[year]
+    ty = data.tax_year(year)
     tax, lower, rows = 0.0, 0.0, []
     for ceiling, rate in ty.brackets:
         if taxable <= lower:
@@ -148,32 +146,60 @@ def income_tax(taxable: float, year: int, credit_points: float) -> tuple[float, 
     return total, rows, ty
 
 
-def build_annual_estimate(s: Session, biz: Business, year: int, credit_points: float) -> dict:
+def _fixed_asset_docs(s: Session, business_id: int, upto_year: int) -> list[Document]:
+    """רכוש קבוע שנרכש בכל שנה עד `upto_year` — נדרש כי הפחת נמשך על פני שנים."""
+    return [d for d in s.scalars(select(Document).where(
+        Document.business_id == business_id, Document.direction == "expense", Document.status == "confirmed",
+        Document.doc_date.is_not(None), Document.doc_date <= date(upto_year, 12, 31)).order_by(Document.doc_date))
+        if d.decision.get("is_fixed_asset")]
+
+
+def build_annual_estimate(s: Session, biz: Business, year: int, credit_points: float,
+                          donations: float = 0.0, carried_loss: float = 0.0) -> dict:
+    from .. import depreciation as dep
+    from ..tax_model import estimate_burden
     start, end = date(year, 1, 1), date(year, 12, 31)
     docs = _docs(s, biz.id, start, end)
     confirmed = [d for d in docs if d.status == "confirmed"]
     revenue = 0.0
     by_cat: dict[str, float] = defaultdict(float)
-    fixed_assets = []
     for d in confirmed:
         if d.direction == "income":
             sign = -1 if d.extracted.get("doc_type") == "credit_invoice" else 1
             revenue += sign * d.decision["pre_vat_amount"]
-        elif d.decision.get("is_fixed_asset"):
-            fixed_assets.append({"document_id": d.id, "vendor": d.extracted.get("vendor_name"),
-                                 "date": d.doc_date.isoformat() if d.doc_date else None,
-                                 "cost": r2(d.decision["pre_vat_amount"] or 0.0)})
-        else:
+        elif not d.decision.get("is_fixed_asset"):
             by_cat[d.decision["category"]] += d.decision["recognized_expense"]
+
+    depreciation_lines = []
+    for d in _fixed_asset_docs(s, biz.id, year):
+        dec = d.decision
+        cost = (dec.get("pre_vat_amount") or 0.0) + ((dec.get("vat_amount") or 0.0) - (dec.get("deductible_vat") or 0.0))
+        cls = dec.get("asset_class") or "other"
+        rate = data.DEPRECIATION[cls].value
+        amount = dep.depreciation_for_year(cost, d.doc_date, rate, year)
+        if amount > 0:
+            depreciation_lines.append({"document_id": d.id, "vendor": d.extracted.get("vendor_name"),
+                                       "purchased": d.doc_date.isoformat(), "asset_class": cls, "rate": rate,
+                                       "cost": r2(cost), "depreciation": amount})
+    depreciation_total = sum(x["depreciation"] for x in depreciation_lines)
+    if depreciation_total:
+        by_cat["depreciation"] += depreciation_total
+
     expenses = sum(by_cat.values())
     profit = revenue - expenses
-    tax, rows, ty = income_tax(max(0.0, profit), year, credit_points)
+    burden = estimate_burden(profit, year, credit_points, carried_loss=carried_loss, donations=donations)
 
-    warnings = ["הערכה בלבד — אינה דוח שנתי. לא כולל פחת, ניכויי פנסיה/קרן השתלמות, הכנסות אחרות, ביטוח לאומי"]
-    if not ty.source.verified:
-        warnings.append(f"טבלת המס לשנת {year} לא אומתה: {ty.source.note}")
-    if fixed_assets:
-        warnings.append(f"{len(fixed_assets)} פריטי רכוש קבוע — יש לחשב פחת בנפרד")
+    warnings = ["הערכה בלבד — אינה דוח שנתי. לא כולל ניכויי פנסיה/קרן השתלמות (ראו היועץ), הכנסות אחרות, והתאמות אחרות"]
+    if not burden["tax_table_verified"]:
+        warnings.append(f"טבלת המס לשנת {year} לא אומתה: {burden['tax_table_note']}")
+    if not burden["social_security"]["verified"]:
+        warnings.append("שיעורי הביטוח הלאומי, התקרה והניכוי של 52% לא אומתו מול טבלת המוסד")
+    if depreciation_lines:
+        warnings.append(f"פחת על {len(depreciation_lines)} נכסים לפי שיעורים שלא אומתו (קו ישר, יחסי לימים)")
+    if carried_loss:
+        warnings.append("הפסד מועבר: נדרשת בדיקה שהוא מדווח ומאושר בשנה שבה נוצר")
+    if burden["social_security"]["minimum_applied"]:
+        warnings.append("הכנסה מתחת למזערית: דמי ביטוח לאומי חושבו על ההכנסה המזערית")
     pending = _pending(docs)
     if pending:
         warnings.append(f"{len(pending)} מסמכים ממתינים לבדיקה ולא נכללו")
@@ -182,15 +208,21 @@ def build_annual_estimate(s: Session, biz: Business, year: int, credit_points: f
         "kind": "annual_estimate",
         "business": {"name": biz.name, "vat_id": biz.vat_id, "owner": biz.owner_name},
         "period": {"start": start.isoformat(), "end": end.isoformat()},
+        "report_inputs": {"credit_points": credit_points, "donations": donations, "carried_loss": carried_loss},
         "revenue_pre_vat": r2(revenue),
         "recognized_expenses_by_category": {k: r2(v) for k, v in sorted(by_cat.items())},
         "recognized_expenses_total": r2(expenses),
         "business_profit": r2(profit),
+        "depreciation": depreciation_lines,
+        "taxable_income": burden["taxable_income"],
         "credit_points": credit_points,
-        "estimated_income_tax": r2(tax),
-        "tax_breakdown": rows,
-        "tax_table_source": {"citation": ty.source.citation, "verified": ty.source.verified},
-        "fixed_assets": fixed_assets,
+        "donation_credit": burden["donation_credit"],
+        "estimated_income_tax": burden["income_tax"],
+        "social_security": burden["social_security"],
+        "total_burden": burden["total_burden"],
+        "effective_rate": burden["effective_rate"],
+        "tax_breakdown": burden["tax_breakdown"],
+        "tax_table_source": {"verified": burden["tax_table_verified"], "note": burden["tax_table_note"]},
         "included_document_ids": [d.id for d in confirmed],
         "pending_document_ids": pending,
         "warnings": warnings,

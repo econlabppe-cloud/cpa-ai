@@ -232,18 +232,19 @@ def review_document(s: Session, doc_id: int, rv: ReviewIn, actor: str) -> Docume
 
 
 # --- דוחות -----------------------------------------------------------------
-def _build(s: Session, biz: Business, kind: str, start: date, end: date, credit_points: float) -> dict:
+def _build(s: Session, biz: Business, kind: str, start: date, end: date, inputs: dict) -> dict:
     if kind == "vat_period":
         return periodic.build_vat_period(s, biz, start, end)
     if kind == "income_tax_advance":
         return periodic.build_income_tax_advance(s, biz, start, end)
     if kind == "annual_estimate":
-        return periodic.build_annual_estimate(s, biz, start.year, credit_points)
+        return periodic.build_annual_estimate(s, biz, start.year, inputs.get("credit_points", 2.25),
+                                              inputs.get("donations", 0.0), inputs.get("carried_loss", 0.0))
     raise ValueError(f"סוג דוח לא מוכר: {kind}")
 
 
 def prepare_report(s: Session, business_id: int, kind: str, year: int, month: int | None,
-                   credit_points: float, actor: str) -> Report:
+                   credit_points: float, actor: str, donations: float = 0.0, carried_loss: float = 0.0) -> Report:
     biz = get(s, Business, business_id)
     if kind == "annual_estimate":
         start, end = date(year, 1, 1), date(year, 12, 31)
@@ -251,8 +252,9 @@ def prepare_report(s: Session, business_id: int, kind: str, year: int, month: in
         if month is None:
             raise ValueError("נדרש חודש לדוח תקופתי")
         start, end = periodic.vat_period_bounds(year, month, biz.vat_frequency)
-    payload = _build(s, biz, kind, start, end, credit_points)
-    payload["credit_points_input"] = credit_points
+    inputs = {"credit_points": credit_points, "donations": donations, "carried_loss": carried_loss}
+    payload = _build(s, biz, kind, start, end, inputs)
+    payload["report_inputs"] = inputs   # לא "inputs": בדוח מע"מ המפתח הזה כבר מציין מע"מ תשומות
 
     for old in s.scalars(select(Report).where(
             Report.business_id == biz.id, Report.kind == kind, Report.period_start == start,
@@ -276,8 +278,9 @@ def approve_report(s: Session, report_id: int, ap: ApprovalIn, actor: str) -> Re
     if rep.payload.get("pending_document_ids"):
         raise Conflict("יש מסמכים בתקופה שממתינים לבדיקה — יש לטפל בהם ולהכין את הדוח מחדש")
     biz = get(s, Business, rep.business_id)
-    fresh = _build(s, biz, rep.kind, rep.period_start, rep.period_end, rep.payload.get("credit_points_input", 0.0))
-    fresh["credit_points_input"] = rep.payload.get("credit_points_input", 0.0)
+    inputs = rep.payload.get("report_inputs", {})
+    fresh = _build(s, biz, rep.kind, rep.period_start, rep.period_end, inputs)
+    fresh["report_inputs"] = inputs
     if periodic.content_hash(fresh) != rep.content_hash:
         rep.status = "superseded"
         audit(s, actor, "approve_rejected_stale", "report", rep.id)

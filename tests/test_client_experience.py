@@ -253,3 +253,33 @@ def test_future_period_is_marked_open_not_missing(c):
     client, bid = c
     dl = home(client, bid)["deadlines"]
     assert dl[0]["period_open"] is False and dl[1]["period_open"] is True
+
+
+def test_year_end_task_appears_in_the_last_60_days_only_for_businesses_with_income(c):
+    client, bid = c
+    s = client.app.state.SessionLocal()
+    try:
+        biz = s.get(Business, bid)
+        quiet = home_mod.build_home(s, biz, date(2026, 11, 5))
+        assert "year_end" not in [t["id"] for t in quiet["tasks"]]          # אין הכנסות — אין מה לתכנן
+        client.post(f"/api/v1/businesses/{bid}/income", headers=H, json={"doc_date": "2026-03-10", "pre_vat_amount": 50_000})
+        early = home_mod.build_home(s, biz, date(2026, 6, 1))
+        late = home_mod.build_home(s, biz, date(2026, 11, 5))
+    finally:
+        s.close()
+    assert "year_end" not in [t["id"] for t in early["tasks"]]
+    t = next(t for t in late["tasks"] if t["id"] == "year_end")
+    assert "56 ימים" in t["title"] and t["cta"]["anchor"] == "m-advisor"
+
+
+def test_me_endpoint_reports_role_and_signing_rights(tmp_path, monkeypatch):
+    monkeypatch.setenv("CPA_AI_DATA_DIR", str(tmp_path / "d"))
+    users = {"a": "מנהל", "c": {"name": "דנה", "role": "client", "businesses": [1]},
+             "r": {"name": "רו\"ח", "role": "accountant", "businesses": [1]}}
+    cl = TestClient(create_app("sqlite://", users=users))
+    assert cl.get("/api/v1/me", headers={"X-API-Key": "a"}).json() == {
+        "name": "מנהל", "role": "admin", "is_admin": True, "can_sign": True, "businesses": None}
+    client_me = cl.get("/api/v1/me", headers={"X-API-Key": "c"}).json()
+    assert client_me["can_sign"] is False and client_me["is_admin"] is False and client_me["businesses"] == [1]
+    assert cl.get("/api/v1/me", headers={"X-API-Key": "r"}).json()["can_sign"] is True
+    assert cl.get("/api/v1/me").status_code == 401

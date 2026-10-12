@@ -55,7 +55,7 @@ def build_package(s: Session, biz: Business, start: date, end: date) -> bytes:
                 try:
                     fname = f"originals/{d.id:05d}_{_safe(d.attachment_name or 'file')}"
                     z.writestr(fname, storage.read(d.attachment_path))
-                except (OSError, ValueError):
+                except (OSError, ValueError, storage.StorageError):
                     fname, _ = "", missing_files.append(d.id)
             w.writerow([_cell(v) for v in [
                 d.doc_date.isoformat() if d.doc_date else "", "הכנסה" if d.direction == "income" else "הוצאה",
