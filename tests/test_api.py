@@ -150,3 +150,50 @@ def test_missing_allocation_can_be_confirmed_without_vat_deduction(client, biz):
     r = client.post(f"/api/v1/documents/{d['id']}/review", headers=H, json={"action": "confirm", "reviewer": "x"})
     assert r.status_code == 200
     assert r.json()["decision"]["deductible_vat"] == 0.0
+
+
+def test_advisor_pension_and_vat_blocked(client, biz):
+    client.post(f"/api/v1/businesses/{biz}/income", headers=H, json={"doc_date": "2026-03-10", "pre_vat_amount": 200_000})
+    client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H,
+                json={"text": (SAMPLES / "fuel_invoice_no_allocation.txt").read_text(encoding="utf-8")})
+    r = client.get(f"/api/v1/businesses/{biz}/advisor", headers=H, params={"year": 2026})
+    assert r.status_code == 200, r.text
+    p = r.json()
+    by_id = {s["id"]: s for s in p["strategies"]}
+    assert by_id["pension_self_employed"]["status"] == "needs_verification"
+    assert by_id["pension_self_employed"]["details"]["room_deduction"] > 0
+    assert by_id["vat_blocked_allocation"]["details"]["total_vat_blocked"] == 1080.0
+    assert "סעיף 86" in " ".join(p["not_offered"])
+    assert p["disclaimer"]
+    assert any(a["action"] == "advisor_run" for a in client.get("/api/v1/audit", headers=H).json())
+
+
+def test_pension_fills_better_channel_first_and_respects_caps():
+    from cpa_ai.advisor.planner import pension_plan
+    high = pension_plan(profit=300_000, marginal=0.47, existing=0)
+    assert high["better_channel"] == "deduction"
+    assert high["room_deduction"] == 25_608 and high["room_credit"] == 12_804
+    low = pension_plan(profit=50_000, marginal=0.20, existing=0)
+    assert low["better_channel"] == "credit"
+    assert low["base_income"] == 50_000
+    used = pension_plan(profit=300_000, marginal=0.47, existing=30_000)
+    # 30,000 כבר הופקדו: 25,608 מלאים את הניכוי (ערך גבוה), השאר 4,392 מכסה מתוך הזיכוי
+    assert used["room_deduction"] == 0
+    assert used["room_credit"] == 12_804 - 4_392
+
+
+def test_corporate_comparison_is_partial_and_lists_exclusions():
+    from cpa_ai.advisor.planner import corporate_comparison
+    c = corporate_comparison(profit=400_000, year=2025, credit_points=2.25, material_holder=False)
+    assert c["company_full_distribution"]["corp_tax"] == 92_000
+    assert "ביטוח לאומי" in c["excluded"]
+    assert c["status"] == "needs_verification"
+    assert c["basis"][0]["verified"] is False
+
+
+def test_advance_reduction_is_cash_not_tax_saving():
+    from cpa_ai.advisor.planner import advance_reduction
+    a = advance_reduction(turnover=300_000, advance_rate_pct=10, estimated_tax=5_000)
+    assert a["estimated_cash_overpaid"] == 25_000
+    assert a["estimated_saving"] == 0.0
+    assert advance_reduction(300_000, 0, 5_000) is None

@@ -175,6 +175,17 @@ def create_app(database_url: str | None = None, api_key: str | None = None) -> F
         return Response(blob, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="unified_{bid}_{year}.zip"'})
 
+    # --- יועץ תכנון מס (לגיטימי בלבד; הפלט להכנה לשיחה עם מייצג) -------------------
+    @app.get("/api/v1/businesses/{bid}/advisor")
+    def advisor(bid: int, year: int = Query(ge=2015, le=2100), credit_points: float = Query(2.25, ge=0, le=20),
+                existing_pension: float = Query(0, ge=0), existing_keren: float = Query(0, ge=0),
+                material_holder: bool = False, s=Depends(session), who=Depends(actor)):
+        from .advisor import advise
+        biz = services.get(s, Business, bid)
+        services.audit(s, who, "advisor_run", "business", biz.id, year=year)
+        s.commit()
+        return advise(s, biz, year, credit_points, existing_pension, existing_keren, material_holder)
+
     # --- פרטיות וביקורת -----------------------------------------------------------
     @app.get("/api/v1/businesses/{bid}/privacy/export")
     def privacy_export(bid: int, s=Depends(session), who=Depends(actor)):

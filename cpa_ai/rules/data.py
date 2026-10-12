@@ -167,3 +167,52 @@ TAX_YEARS: dict[int, TaxYear] = {
         ),
     ),
 }
+
+
+# --- תכנון מס לגיטימי (מודול היועץ) -------------------------------------------
+# כל פרמטר כאן הוא נתון "כפי שדווח במקורות משניים" אלא אם verified=True.
+# מקורות משניים נסתרו זה בזה בכמה נקודות — ראו docs/research-log-2026-10.md.
+PLANNING_SOURCE_NOTE = "נתון מדווח ממקורות משניים (אתרי פנסיה/רואי חשבון), לא מנוסח חוק רשמי"
+
+
+@dataclass(frozen=True)
+class Param:
+    value: float
+    source: Source
+
+
+PENSION_SELF_EMPLOYED = {
+    "ceiling_income": Param(232_800, Source(
+        "פקודת מס הכנסה, סעיפים 45א ו-47 — הכנסה מזכה לעצמאי", False, PLANNING_SOURCE_NOTE)),
+    "deduction_rate": Param(0.11, Source("פקודת מס הכנסה, סעיף 47 — ניכוי עד 11%", False, PLANNING_SOURCE_NOTE)),
+    "deduction_cap": Param(25_608, Source("סעיף 47 — תקרת ניכוי 2026 (11% מ-232,800)", False, PLANNING_SOURCE_NOTE)),
+    "credit_rate": Param(0.055, Source("פקודת מס הכנסה, סעיף 45א — הפקדה מזכה עד 5.5%", False, PLANNING_SOURCE_NOTE)),
+    "credit_cap": Param(12_804, Source("סעיף 45א — תקרה (5.5% מ-232,800)", False, PLANNING_SOURCE_NOTE)),
+    "credit_percent": Param(0.35, Source("סעיף 45א — זיכוי של 35% מההפקדה המזכה", False, PLANNING_SOURCE_NOTE)),
+}
+
+KEREN_HISHTALMUT_SELF_EMPLOYED = {
+    "ceiling_income": Param(293_397, Source("הכנסה קובעת לעצמאי לצורך קרן השתלמות 2026", False, PLANNING_SOURCE_NOTE)),
+    "deduction_rate": Param(0.045, Source("קרן השתלמות לעצמאי — ניכוי עד 4.5%", False, PLANNING_SOURCE_NOTE)),
+    # מקור אחד מדווח 13,203; מקור אחר מדווח 20,566 כתקרת הפקדה מוטבת — סותרים, מיושם הנמוך
+    "deduction_cap": Param(13_203, Source(
+        "קרן השתלמות לעצמאי — תקרת ניכוי 2026", False,
+        PLANNING_SOURCE_NOTE + ". מקור אחר מדווח 20,566 — סתירה, נדרש אימות")),
+}
+
+CORPORATE = {
+    "corp_tax_rate": Param(0.23, Source("פקודת מס הכנסה, סעיף 126 — מס חברות", False, PLANNING_SOURCE_NOTE)),
+    "dividend_rate_individual": Param(0.25, Source("סעיף 125 — מס דיבידנד ליחיד", False, PLANNING_SOURCE_NOTE)),
+    "dividend_rate_material_holder": Param(0.30, Source("סעיף 125 — מס דיבידנד לבעל מניות מהותי (10%+)", False, PLANNING_SOURCE_NOTE)),
+}
+
+VEHICLE_RULE = {
+    "recognition_rate": Param(0.45, Source(
+        'תקנות מס הכנסה (ניכוי הוצאות רכב), התשנ"ה-1995 — 45%', False, PLANNING_SOURCE_NOTE)),
+}
+
+ADVANCE_REDUCTION_FORM = Source(
+    "טופס 2216א' — בקשה לביטול או הקטנת מקדמות (שירות gov.il)",
+    verified=True,
+    note="הטופס קיים; מועד ההגשה והתנאים (לפי מקור משני: עד 31 בינואר) — לאימות",
+)

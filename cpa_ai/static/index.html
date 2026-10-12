@@ -106,6 +106,20 @@ pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:aut
     <div id="r-list" style="margin-top:12px"></div>
   </section>
 
+  <section id="t-advisor" class="card hide">
+    <h3>יועץ תכנון מס — אופטימיזציה לגיטימית</h3>
+    <div class="banner">הדו"ח מכין שיחה עם מייצג מורשה. הוא לא מציע הסתרת הכנסה, חשבוניות פיקטיביות או הוצאות פרטיות. סכומים שמבוססים על נתון שלא אומת מסומנים "דורש אימות".</div>
+    <div class="row">
+      <label>שנה<input id="a-year" type="number"></label>
+      <label>נקודות זיכוי<input id="a-cp" type="number" step="0.25" value="2.25"></label>
+      <label>הפקדות לפנסיה שכבר בוצעו השנה (₪)<input id="a-pen" type="number" value="0"></label>
+      <label>קרן השתלמות שכבר הופקדה השנה (₪)<input id="a-ker" type="number" value="0"></label>
+      <label><input id="a-mh" type="checkbox" style="width:auto"> בעל מניות מהותי (10%+)</label>
+      <button class="act" onclick="runAdvisor()">הרצת יועץ</button>
+    </div>
+    <div id="a-out" style="margin-top:12px"></div>
+  </section>
+
   <section id="t-rules" class="card hide"><h3>כללי המס ומקורותיהם</h3><div id="rules"></div></section>
   <section id="t-audit" class="card hide"><h3>יומן ביקורת</h3><div id="audit"></div>
     <div class="row" style="margin-top:10px"><button class="sec" onclick="privacyExport()">ייצוא כל המידע של העסק</button><button class="sec" onclick="purgeRaw()">מחיקת טקסט גולמי</button></div>
@@ -114,7 +128,7 @@ pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:aut
 <div id="msg"></div>
 
 <script>
-const TABS=[["biz","עסק"],["ingest","קליטה"],["docs","תור בדיקה"],["reports","דוחות ואישור"],["rules","כללים"],["audit","יומן ופרטיות"]];
+const TABS=[["biz","עסק"],["ingest","קליטה"],["docs","תור בדיקה"],["reports","דוחות ואישור"],["advisor","יועץ תכנון"],["rules","כללים"],["audit","יומן ופרטיות"]];
 const KIND={vat_period:'מע"מ תקופתי',income_tax_advance:"מקדמות מס הכנסה",annual_estimate:"הערכה שנתית"};
 const ST={confirmed:"מאושר",pending_review:"ממתין לבדיקה",rejected:"נדחה",prepared:"מוכן לאישור",approved:"אושר",superseded:"מיושן"};
 const $=id=>document.getElementById(id);
@@ -123,7 +137,7 @@ const money=n=>n==null?"—":Number(n).toLocaleString("he-IL",{minimumFractionDi
 function store(k,v){try{v===undefined?0:localStorage.setItem(k,v);return localStorage.getItem(k)}catch(e){return null}}
 $("apikey").value=store("cpa_key")||"";$("actor").value=store("cpa_actor")||"";
 $("apikey").onchange=e=>store("cpa_key",e.target.value);$("actor").onchange=e=>store("cpa_actor",e.target.value);
-$("r-year").value=new Date().getFullYear();$("r-month").value=new Date().getMonth()+1;$("n-date").valueAsDate=new Date();
+$("r-year").value=new Date().getFullYear();$("a-year").value=new Date().getFullYear();$("r-month").value=new Date().getMonth()+1;$("n-date").valueAsDate=new Date();
 
 function toast(t,ok){const m=$("msg");m.textContent=t;m.style.display="block";m.style.background=ok?"#dcfae6":"#fee4e2";m.style.color=ok?"#16794c":"#b42318";clearTimeout(m._t);m._t=setTimeout(()=>m.style.display="none",5000)}
 async function api(path,opt={}){
@@ -138,7 +152,7 @@ async function api(path,opt={}){
 const B=()=>$("biz").value;
 function needBiz(){if(!B()){toast("יש לבחור או ליצור עסק");return false}return true}
 function show(t){TABS.forEach(([k])=>{$("t-"+k).classList.toggle("hide",k!==t);$("tab-"+k).classList.toggle("on",k===t)});
-  if(t==="docs")loadDocs();if(t==="reports")loadReports();if(t==="rules")loadRules();if(t==="audit")loadAudit()}
+  if(t==="docs")loadDocs();if(t==="reports")loadReports();if(t==="rules")loadRules();if(t==="advisor")$("a-year").value=$("a-year").value||new Date().getFullYear();if(t==="audit")loadAudit()}
 $("tabs").innerHTML=TABS.map(([k,l])=>`<button id="tab-${k}" onclick="show('${k}')">${l}</button>`).join("");
 
 async function loadBiz(){try{const l=await api("/api/v1/businesses");const cur=B()||store("cpa_biz");
@@ -201,6 +215,19 @@ async function loadRules(){try{const r=await api("/api/v1/rules");const v=s=>s.v
 async function loadAudit(){try{const l=await api("/api/v1/audit?limit=200");$("audit").innerHTML=`<table><tr><th>זמן</th><th>משתמש</th><th>פעולה</th><th>ישות</th><th>פרטים</th></tr>${l.map(a=>`<tr><td>${new Date(a.ts).toLocaleString("he-IL")}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.entity)} #${a.entity_id??""}</td><td><small>${esc(JSON.stringify(a.details))}</small></td></tr>`).join("")}</table>`}catch(e){toast(e.message)}}
 async function privacyExport(){if(!needBiz())return;const d=await api(`/api/v1/businesses/${B()}/privacy/export`);saveBlob(new Blob([JSON.stringify(d,null,2)],{type:"application/json"}),`privacy_export_${B()}.json`)}
 async function purgeRaw(){if(!needBiz()||!confirm("למחוק את הטקסט הגולמי של כל המסמכים? רשומות החשבונאות יישמרו."))return;try{const r=await api(`/api/v1/businesses/${B()}/privacy/purge-raw`,{method:"POST"});toast(`נמחק טקסט גולמי מ-${r.purged_documents} מסמכים`,1)}catch(e){toast(e.message)}}
+
+async function runAdvisor(){if(!needBiz())return;const q=new URLSearchParams({year:$("a-year").value,credit_points:$("a-cp").value,existing_pension:$("a-pen").value||0,existing_keren:$("a-ker").value||0,material_holder:$("a-mh").checked});
+  try{const p=await api(`/api/v1/businesses/${B()}/advisor?${q}`);
+    const badge=s=>s==="ready"?'<span class="b confirmed">אומת</span>':'<span class="b pending_review">דורש אימות</span>';
+    $("a-out").innerHTML=`<p>שיעור שולי מוערך: <b>${Math.round(p.marginal_rate*100)}%</b> · חיסכון מוערך מהמלצות שאינן השוואת חברה (כולל נתונים לא מאומתים): <b>${money(p.total_estimated_saving_unverified_inputs)}</b></p>`+
+      p.strategies.map(s=>`<div class="card"><div class="row"><h4 style="flex:1;margin:0">${esc(s.title)}</h4>${badge(s.status)}</div>
+        <p>הערכה: <b>${money(s.estimated_annual_saving)}</b></p>
+        <ul>${s.actions.map(a=>`<li>${esc(a)}</li>`).join("")}</ul>
+        <p class="f info">סיכון: ${esc(s.risk)}</p>
+        <p class="f info">בסיס: ${s.basis.map(b=>esc(b.citation)+(b.verified?"":" (לא אומת)")).join(" · ")}</p>
+        <details><summary>פרטי חישוב</summary><pre>${esc(JSON.stringify(s.details,null,2))}</pre></details></div>`).join("")+
+      `<div class="card"><b>לא מוצע</b><ul>${p.not_offered.map(x=>`<li>${esc(x)}</li>`).join("")}</ul><p class="f info">${esc(p.disclaimer)}</p></div>`;
+  }catch(e){toast(e.message)}}
 
 show("biz");loadBiz();
 </script>
