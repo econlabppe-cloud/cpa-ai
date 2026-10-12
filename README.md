@@ -12,7 +12,7 @@ cd cpa-ai
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 python -m cpa_ai            # http://127.0.0.1:8000  (ממשק בעברית)
-pytest                      # 276 בדיקות
+pytest                      # 286 בדיקות
 ```
 
 תיעוד ה-API האינטראקטיבי: `http://127.0.0.1:8000/docs`
@@ -157,6 +157,11 @@ WhatsApp (webhook)     ─┼─► ingest: אידמפוטנטיות → קרי�
 | **כותרות אבטחה** | CSP עם nonce לכל בקשה (אין script מוטבע), `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, `Cache-Control: no-store` ל-API, HSTS מאחורי HTTPS |
 | **הצפנה במנוחה** | `CPA_AI_ENCRYPTION_KEY` (`python -m cpa_ai gen-key`). קבצי מקור מוצפנים ב-Fernet; כמה מפתחות מופרדים בפסיק מאפשרים רוטציה. **המסד עצמו אינו מוצפן** — להשתמש בהצפנת דיסק או ב-PostgreSQL עם הצפנה |
 | **גיבוי ושחזור** | `python -m cpa_ai backup out.zip` / `verify-backup` / `restore`. snapshot עקבי של SQLite, manifest עם גיבוב לכל רכיב, המסד בתוך הגיבוי מוצפן אם הוגדר מפתח, שחזור מסרב לדרוס יעד קיים. PostgreSQL: `pg_dump` |
+
+## לוח רואה החשבון והתקנה בטלפון
+
+- **לוח משותף:** `GET /api/v1/dashboard` — משימות מכל הלקוחות שמותרים למשתמש, ממוינות לפי דחיפות, עם סיכום. לקוח רואה רק את העסק שלו. מוצג בראש מסך הבית כשמשויכים למשתמש כמה עסקים.
+- **התקנה על מסך הבית:** `/manifest.webmanifest` (מצב standalone, RTL, אייקון מוטמע). לא דורש שירות רשת נוסף.
 
 ## מה עוד חסר לפני שימוש אמיתי
 

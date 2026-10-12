@@ -227,11 +227,46 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
     def health():
         return {"status": "ok", "auth_required": bool(principals)}
 
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifest():
+        """התקנה על מסך הבית בטלפון. האייקון מוטמע כדי שלא תהיה בקשת רשת נוספת."""
+        icon = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
+                "%3Crect width='32' height='32' rx='7' fill='%232457e6'/%3E%3Cpath d='M9 17l5 5 9-11' stroke='white' "
+                "stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+        return JSONResponse({
+            "name": "CPA-AI — הנהלת חשבון", "short_name": "CPA-AI", "lang": "he", "dir": "rtl",
+            "start_url": "/", "display": "standalone", "background_color": "#f4f6fb", "theme_color": "#2457e6",
+            "icons": [{"src": icon, "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]},
+            media_type="application/manifest+json")
+
     @app.get("/api/v1/me")
     def me(p: Principal = Depends(principal)):
         """מי אני ומה מותר לי — כדי שהממשק יציג רק פעולות שמותרות."""
         return {"name": p.name, "role": p.role, "is_admin": p.is_admin, "can_sign": p.can_sign,
                 "businesses": sorted(p.businesses) if p.businesses is not None else None}
+
+    @app.get("/api/v1/dashboard")
+    def dashboard(s=Depends(session), p: Principal = Depends(principal)):
+        """לוח משותף: משימות מכל העסקים שמותרים למשתמש, ממוינות לפי דחיפות. לא שומר מצב."""
+        from .home import build_home
+        rows = [b for b in s.scalars(select(Business).order_by(Business.id)) if p.can_access(b.id)]
+        businesses, tasks = [], []
+        for b in rows:
+            h = build_home(s, b)
+            pending = h["counts"]["pending"]
+            businesses.append({"id": b.id, "name": b.name, "pending": pending, "bulk_ready": h["counts"]["bulk_ready"],
+                               "bank_open": h["counts"]["bank_open"], "all_clear": h["all_clear"],
+                               "deadline": h["deadlines"][0]})
+            for t in h["tasks"]:
+                tasks.append({**t, "business_id": b.id, "business_name": b.name})
+        tasks.sort(key=lambda t: (t["priority"], t["business_name"]))
+        return {
+            "businesses": businesses,
+            "tasks": tasks,
+            "summary": {"businesses": len(rows), "pending_documents": sum(x["pending"] for x in businesses),
+                        "urgent_tasks": sum(1 for t in tasks if t["priority"] <= 2),
+                        "clients_all_clear": sum(1 for x in businesses if x["all_clear"])},
+        }
 
     @app.get("/api/v1/rules")
     def rules():

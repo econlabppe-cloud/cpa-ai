@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#2457e6">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%232457e6%27/%3E%3Cpath d=%27M9 17l5 5 9-11%27 stroke=%27white%27 stroke-width=%273.5%27 fill=%27none%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
 <title>CPA-AI — הנהלת חשבונות בלי כאב ראש</title>
 <style>
@@ -70,6 +73,9 @@ dialog::backdrop{background:rgba(8,12,22,.55)}
 #msg{position:fixed;bottom:calc(84px + env(safe-area-inset-bottom));inset-inline:16px;max-width:560px;margin:auto;padding:12px 16px;border-radius:12px;display:none;z-index:20;font-weight:600;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 @media(min-width:900px){#msg{bottom:24px}}
 .hide{display:none!important}
+.overview{border-inline-start:6px solid var(--pri)}.ov-urgent{margin:6px 0 10px;padding-inline-start:18px;font-size:14px}.ov-list{display:grid;gap:8px}
+.ov-row{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;background:var(--bg);color:var(--ink);border:1px solid var(--line);text-align:start;min-height:48px}
+.ov-name{font-weight:600}
 .skeleton{height:64px;border-radius:var(--r);background:linear-gradient(90deg,var(--line),var(--card),var(--line));background-size:200% 100%;animation:sk 1.2s infinite;margin-bottom:10px}
 @keyframes sk{to{background-position:-200% 0}}
 @media(prefers-reduced-motion:reduce){.skeleton{animation:none}.drop{transition:none}}
@@ -171,10 +177,18 @@ async function createBiz(){const v=k=>$(k).value.trim();
     store("cpa_biz",b.id);await loadBiz();toast("מעולה, העסק נוצר",true);go("home")}catch(e){toast(e.message)}}
 
 /* ───────── בית ───────── */
+function overviewHtml(d){
+  const rows=d.businesses.map(b=>`<button class="ov-row" data-pick="${b.id}"><span class="ov-name">${esc(b.name)}</span><span class="pill ${b.all_clear?"ok":b.pending?"warn":""}">${b.all_clear?"הכל בסדר":b.pending?`${b.pending} לבדיקה`:"דורש תשומת לב"}</span></button>`).join("");
+  const top=d.tasks.filter(t=>t.priority<=2).slice(0,5).map(t=>`<li><b>${esc(t.business_name)}:</b> ${esc(t.title)}</li>`).join("");
+  return `<div class="card overview" aria-label="סקירת לקוחות"><h3>כל הלקוחות (${d.summary.businesses})</h3>
+   <p class="muted">${d.summary.urgent_tasks?`${d.summary.urgent_tasks} דברים דחופים`:"אין דברים דחופים"} · ${d.summary.pending_documents} מסמכים מחכים לבדיקה</p>
+   ${top?`<ul class="ov-urgent">${top}</ul>`:""}<div class="ov-list">${rows}</div></div>`}
 async function renderHome(){
   const el=$("v-home");
   if(!S.biz){el.innerHTML=onboarding();$("b-create").onclick=createBiz;return}
   el.innerHTML=skeleton(4);
+  let overview="";
+  if(S.list.length>1){try{overview=overviewHtml(await api("/api/v1/dashboard"))}catch(e){overview=""}}
   const [h,conn]=await Promise.all([api(`/api/v1/businesses/${bid()}/home`),api(`/api/v1/businesses/${bid()}/connections`)]);
   S.home=h;drawNav();
   const bulk=h.counts.bulk_ready;
@@ -185,6 +199,7 @@ async function renderHome(){
   const dl=d.period_open?"התקופה עוד פתוחה":d.status==="submitted"?"הוגש ✓":d.status==="approved"?"אושר, נשאר להגיש":d.status==="prepared"?"מוכן, מחכה לאישור":"עוד לא הוכן";
   const dlCls=d.period_open?"":d.status==="submitted"?"ok":d.days_left<0?"err":"warn";
   el.innerHTML=`
+  ${overview}
   <div class="hello"><h2>${esc(S.biz.name)}</h2><span class="muted">${dstr(h.today)}</span></div>
   ${h.all_clear?'<div class="clear">✅ הכל בסדר — אין משהו שדורש אותך כרגע</div>':'<h3>מה צריך ממך עכשיו</h3>'}
   ${tasks}
@@ -203,6 +218,7 @@ async function renderHome(){
       <p class="muted">אחרי החיבור: שולחים תמונה של קבלה למספר העסק ומקבלים תשובה מיד. אפשר גם לכתוב <b>סטטוס</b> או <b>מה חסר</b>.</p></div>
   </div>`;
   el.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go,b.dataset.anchor||undefined));
+  el.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>{store("cpa_biz",b.dataset.pick);loadBiz().then(()=>go("home"))});
   const bb=el.querySelector("[data-bulk]");if(bb)bb.onclick=bulkConfirm;
   const drop=$("drop"),file=$("file");
   drop.onclick=e=>{if(e.target!==file)file.click()};drop.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();file.click()}};
