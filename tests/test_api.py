@@ -44,7 +44,9 @@ def test_full_flow_vat_report(client, biz):
     assert r.json()["status"] == "confirmed"
 
     # הוצאת דלק — כלל לא מאומת, ממתינה לבדיקה
-    fuel = HEB_INVOICE.replace("אופיס דיפו", "סונול").replace("נייר A4 - 10 חבילות", "דלק 95").replace("טונר HP", "")
+    # ספק אחר = מספר עוסק ומספר מסמך אחרים (אחרת זו כפילות, וזה נבדק ב-test_ingest)
+    fuel = (HEB_INVOICE.replace("אופיס דיפו", "סונול").replace("נייר A4 - 10 חבילות", "דלק 95")
+            .replace("טונר HP", "").replace("513456780", "513451005").replace("10234", "20456"))
     fuel_doc = client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H, json={"text": fuel}).json()
     assert fuel_doc["status"] == "pending_review"
 

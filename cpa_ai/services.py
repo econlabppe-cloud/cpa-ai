@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import extraction
-from .db import AuditLog, Business, Document, Report, utcnow
+from .db import AuditLog, Business, Document, Report, VendorRule, utcnow
 from .reports import periodic, unified_file
 from .rules import engine
 from .rules.checks import validate_israeli_id
@@ -101,16 +101,37 @@ def update_consent(s: Session, business_id: int, consent: bool, actor: str) -> B
 
 
 # --- מסמכים ----------------------------------------------------------------
+def vendor_category(s: Session, business_id: int, vendor_id: str | None) -> str | None:
+    if not vendor_id:
+        return None
+    rule = s.scalar(select(VendorRule).where(VendorRule.business_id == business_id,
+                                              VendorRule.vendor_id == vendor_id.zfill(9)))
+    return rule.category if rule else None
+
+
 def _store_expense(s: Session, biz: Business, extracted: ExtractedDocument, extractor: str,
-                   raw_text: str | None, actor: str) -> Document:
+                   raw_text: str | None, actor: str, *, meta: dict | None = None,
+                   force_review: str | None = None) -> Document:
+    """meta: source/source_ref/content_hash/dedupe_key/attachment_* (ראו ingest.py).
+    force_review: טקסט ממצא שמכריח בדיקה אנושית (למשל תמונה שלא חולצה)."""
     _assert_period_open(s, biz.id, extracted.doc_date)
-    decision = engine.evaluate_expense(extracted)
+    remembered = vendor_category(s, biz.id, extracted.vendor_id)
+    decision = engine.evaluate_expense(extracted, remembered)
+    findings = list(decision.findings)
+    if remembered:
+        findings.append({"code": "VENDOR_MEMORY", "severity": "info",
+                         "message": f"הסיווג נלקח מזיכרון הספק (קבעת בעבר: {remembered})", "source": ""})
+    needs_review = decision.needs_human_review
+    if force_review:
+        findings.append({"code": "FORCED_REVIEW", "severity": "warning", "message": force_review, "source": ""})
+        needs_review = True
+    decision = decision.model_copy(update={"findings": findings, "needs_human_review": needs_review})
     doc = Document(
         business_id=biz.id, direction="expense",
-        status="pending_review" if decision.needs_human_review else "confirmed",
+        status="pending_review" if needs_review else "confirmed",
         extractor=extractor, doc_date=extracted.doc_date,
         extracted=extracted.model_dump(mode="json"), decision=decision.model_dump(mode="json"),
-        raw_text=raw_text,
+        raw_text=raw_text, **(meta or {}),
     )
     s.add(doc)
     s.flush()
@@ -170,6 +191,16 @@ def _assert_period_open(s: Session, business_id: int, doc_date: date | None) -> 
         raise Conflict(f"התאריך בתקופה של דוח מאושר (#{locked.id}) — לא ניתן להוסיף או לשנות. יש לרשום בתקופה הבאה")
 
 
+def _remember_vendor(s: Session, business_id: int, extracted: ExtractedDocument, category: str, who: str) -> None:
+    vid = extracted.vendor_id.zfill(9)
+    rule = s.scalar(select(VendorRule).where(VendorRule.business_id == business_id, VendorRule.vendor_id == vid))
+    if rule:
+        rule.category, rule.created_by = category, who
+    else:
+        s.add(VendorRule(business_id=business_id, vendor_id=vid, vendor_name=extracted.vendor_name,
+                         category=category, created_by=who))
+
+
 def review_document(s: Session, doc_id: int, rv: ReviewIn, actor: str) -> Document:
     doc = get(s, Document, doc_id)
     _assert_period_open(s, doc.business_id, doc.doc_date)
@@ -188,6 +219,8 @@ def review_document(s: Session, doc_id: int, rv: ReviewIn, actor: str) -> Docume
             doc.extracted = extracted.model_dump(mode="json")
             doc.decision = decision.model_dump(mode="json")
             doc.doc_date = extracted.doc_date
+            if rv.category_override and extracted.vendor_id and decision.vendor_id_valid:
+                _remember_vendor(s, doc.business_id, extracted, rv.category_override, rv.reviewer)
         elif any(f["severity"] == "error" for f in doc.decision["findings"]):
             raise Conflict("מסמך הכנסה עם שגיאות — יש להזין אותו מחדש עם נתונים מתוקנים")
         doc.status = "confirmed"
@@ -319,3 +352,36 @@ def privacy_purge_raw(s: Session, business_id: int, actor: str) -> int:
     audit(s, actor, "privacy_purge_raw", "business", biz.id, purged=n)
     s.commit()
     return n
+
+
+def bulk_confirm(s: Session, business_id: int, reviewer: str, include_unverified: bool = False) -> dict:
+    """אישור מרוכז של מסמכים ממתינים שאין בהם שגיאה ולא דורשים עין אנושית (ראו home.bulk_ready)."""
+    from .home import bulk_ready
+    confirmed, skipped = [], []
+    for doc in list_documents(s, business_id, "pending_review", limit=500):
+        ok, why = bulk_ready(doc, include_unverified)
+        if not ok:
+            skipped.append({"id": doc.id, "reason": why})
+            continue
+        try:
+            review_document(s, doc.id, ReviewIn(action="confirm", reviewer=reviewer), reviewer)
+            confirmed.append(doc.id)
+        except Conflict as e:  # תקופה נעולה וכד'
+            skipped.append({"id": doc.id, "reason": str(e)})
+    audit(s, reviewer, "bulk_confirm", "business", business_id, confirmed=len(confirmed), skipped=len(skipped),
+          include_unverified=include_unverified)
+    s.commit()
+    return {"confirmed": confirmed, "skipped": skipped}
+
+
+def mark_submitted(s: Session, report_id: int, reference: str, actor: str) -> Report:
+    """המייצג הגיש בפועל (מחוץ למערכת) — רושמים את מספר האישור שקיבל. זה סוגר את המשימה במסך הבית."""
+    rep = get(s, Report, report_id)
+    if rep.status != "approved":
+        raise Conflict("אפשר לסמן כהוגש רק דוח שאושר על ידי מייצג")
+    if rep.submitted_at is not None:
+        raise Conflict("הדוח כבר סומן כהוגש")
+    rep.submitted_at, rep.submission_ref = utcnow(), reference.strip()[:100]
+    audit(s, actor, "mark_submitted", "report", rep.id, reference=rep.submission_ref)
+    s.commit()
+    return rep

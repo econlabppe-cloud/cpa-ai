@@ -2,3 +2,4 @@ __pycache__/
 *.db
 .pytest_cache/
 .env
+cpa_ai_data/

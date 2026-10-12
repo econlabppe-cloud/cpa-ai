@@ -103,6 +103,8 @@ class DocumentOut(BaseModel):
     extractor: str
     extracted: dict
     decision: dict
+    source: str = "manual"
+    attachment_name: Optional[str] = None
     created_at: datetime
 
 
@@ -119,4 +121,6 @@ class ReportOut(BaseModel):
     approver_license_type: Optional[str]
     approver_license_number: Optional[str]
     approved_at: Optional[datetime]
+    submitted_at: Optional[datetime] = None
+    submission_ref: Optional[str] = None
     created_at: datetime
