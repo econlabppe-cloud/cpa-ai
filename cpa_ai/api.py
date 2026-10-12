@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from urllib.parse import unquote
@@ -20,10 +21,19 @@ STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 10 * 1024 * 1024
 
 
-def create_app(database_url: str | None = None, api_key: str | None = None) -> FastAPI:
+def create_app(database_url: str | None = None, api_key: str | None = None,
+               users: dict[str, str] | None = None) -> FastAPI:
+    """users: {מפתח: שם} — כשמוגדר, שם המשתמש ביומן נגזר מהמפתח ולא מכותרת שהלקוח שולח.
+    api_key: מפתח משותף יחיד (השם ביומן הוא מה שנשלח בכותרת X-Actor)."""
     app = FastAPI(title="CPA-AI — הכנת דוחות לעוסק מורשה", version="1.0.0")
     SessionLocal = make_sessionmaker(database_url)
-    key = api_key if api_key is not None else os.getenv("CPA_AI_API_KEY", "")
+    if users is None:
+        users = json.loads(os.getenv("CPA_AI_USERS", "") or "{}")
+    if not users:
+        shared = api_key if api_key is not None else os.getenv("CPA_AI_API_KEY", "")
+        users = {shared: None} if shared else {}
+    if not users and os.getenv("CPA_AI_ALLOW_INSECURE") != "1":
+        raise RuntimeError("לא הוגדר CPA_AI_API_KEY (או CPA_AI_USERS). לפיתוח מקומי בלבד: CPA_AI_ALLOW_INSECURE=1")
 
     def session():
         s = SessionLocal()
@@ -33,10 +43,14 @@ def create_app(database_url: str | None = None, api_key: str | None = None) -> F
             s.close()
 
     def actor(x_api_key: Optional[str] = Header(None), x_actor: Optional[str] = Header(None)) -> str:
-        if key and not (x_api_key and secrets.compare_digest(x_api_key, key)):
-            raise HTTPException(401, "מפתח API חסר או שגוי")
         # שמות בעברית מגיעים מקודדי URL (כותרות HTTP מוגבלות ל-ISO-8859-1)
-        return unquote(x_actor or "anonymous")[:200]
+        claimed = unquote(x_actor or "anonymous")[:200]
+        if not users:
+            return claimed  # מצב פיתוח מפורש בלבד (CPA_AI_ALLOW_INSECURE=1)
+        for k, name in users.items():
+            if x_api_key and secrets.compare_digest(x_api_key, k):
+                return name or claimed  # מפתח אישי — השם נגזר מהמפתח; מפתח משותף — הכותרת
+        raise HTTPException(401, "מפתח API חסר או שגוי")
 
     @app.exception_handler(services.NotFound)
     async def _nf(_: Request, e: Exception):
@@ -74,7 +88,7 @@ def create_app(database_url: str | None = None, api_key: str | None = None) -> F
 
     @app.get("/api/v1/health")
     def health():
-        return {"status": "ok", "auth_required": bool(key)}
+        return {"status": "ok", "auth_required": bool(users)}
 
     @app.get("/api/v1/rules")
     def rules():
@@ -133,9 +147,10 @@ def create_app(database_url: str | None = None, api_key: str | None = None) -> F
         return doc_out(services.add_income(s, bid, body, who))
 
     @app.get("/api/v1/businesses/{bid}/documents", response_model=list[DocumentOut])
-    def list_docs(bid: int, status: Optional[str] = None, s=Depends(session), who=Depends(actor)):
+    def list_docs(bid: int, status: Optional[str] = None, limit: int = Query(100, ge=1, le=500),
+                  offset: int = Query(0, ge=0), s=Depends(session), who=Depends(actor)):
         services.get(s, Business, bid)
-        return [doc_out(d) for d in services.list_documents(s, bid, status)]
+        return [doc_out(d) for d in services.list_documents(s, bid, status, limit, offset)]
 
     @app.get("/api/v1/documents/{did}", response_model=DocumentOut)
     def get_doc(did: int, s=Depends(session), who=Depends(actor)):
@@ -153,9 +168,11 @@ def create_app(database_url: str | None = None, api_key: str | None = None) -> F
         return rep_out(services.prepare_report(s, bid, kind, year, month, credit_points, who))
 
     @app.get("/api/v1/businesses/{bid}/reports", response_model=list[ReportOut])
-    def list_reports(bid: int, s=Depends(session), who=Depends(actor)):
+    def list_reports(bid: int, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0),
+                     s=Depends(session), who=Depends(actor)):
         return [rep_out(r) for r in s.scalars(
-            select(Report).where(Report.business_id == bid).order_by(Report.id.desc()))]
+            select(Report).where(Report.business_id == bid).order_by(Report.id.desc())
+            .limit(limit).offset(offset))]
 
     @app.get("/api/v1/reports/{rid}", response_model=ReportOut)
     def get_report(rid: int, s=Depends(session), who=Depends(actor)):
@@ -194,6 +211,10 @@ def create_app(database_url: str | None = None, api_key: str | None = None) -> F
     @app.post("/api/v1/businesses/{bid}/privacy/purge-raw")
     def privacy_purge(bid: int, s=Depends(session), who=Depends(actor)):
         return {"purged_documents": services.privacy_purge_raw(s, bid, who)}
+
+    @app.get("/api/v1/audit/verify")
+    def audit_verify(s=Depends(session), who=Depends(actor)):
+        return services.verify_audit(s)
 
     @app.get("/api/v1/audit")
     def audit_log(limit: int = Query(100, le=1000), s=Depends(session), who=Depends(actor)):

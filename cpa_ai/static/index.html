@@ -25,6 +25,12 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:right;
 pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;font-size:12px;direction:ltr;text-align:left}
 #msg{position:fixed;bottom:16px;left:16px;right:16px;max-width:600px;margin:auto;padding:10px 14px;border-radius:8px;display:none;z-index:9}
 .hide{display:none}.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}.kpi div{background:var(--bg);border-radius:8px;padding:10px}.kpi b{display:block;font-size:18px}
+dialog{border:0;border-radius:12px;padding:0;width:min(560px,94vw);box-shadow:0 10px 40px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(15,23,42,.45)}
+.dlg-hd{padding:14px 16px;border-bottom:1px solid var(--line);font-weight:700}
+.dlg-bd{padding:14px 16px;display:grid;gap:10px}.dlg-bd label{font-size:13px;color:var(--mut)}
+.dlg-err{color:var(--err);font-size:13px;min-height:1em}
+.dlg-ft{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-start}
 </style>
 </head>
 <body>
@@ -125,10 +131,17 @@ pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:aut
     <div class="row" style="margin-top:10px"><button class="sec" onclick="privacyExport()">ייצוא כל המידע של העסק</button><button class="sec" onclick="purgeRaw()">מחיקת טקסט גולמי</button></div>
   </section>
 </div>
+<dialog id="dlg"><form method="dialog" id="dlg-form">
+  <div class="dlg-hd" id="dlg-title"></div>
+  <div class="dlg-bd" id="dlg-body"></div>
+  <div class="dlg-err" id="dlg-err"></div>
+  <div class="dlg-ft"><button class="act" id="dlg-ok" type="submit">שמירה</button><button class="sec" type="button" id="dlg-cancel">ביטול</button></div>
+</form></dialog>
 <div id="msg"></div>
 
 <script>
 const TABS=[["biz","עסק"],["ingest","קליטה"],["docs","תור בדיקה"],["reports","דוחות ואישור"],["advisor","יועץ תכנון"],["rules","כללים"],["audit","יומן ופרטיות"]];
+const CATS={office_supplies:"ציוד משרדי",software:"תוכנה",inventory:"מלאי",professional_services:"שירותים מקצועיים",vehicle:"רכב",refreshments:"כיבוד",hospitality:"אירוח",equipment:"ציוד/רכוש קבוע"};
 const KIND={vat_period:'מע"מ תקופתי',income_tax_advance:"מקדמות מס הכנסה",annual_estimate:"הערכה שנתית"};
 const ST={confirmed:"מאושר",pending_review:"ממתין לבדיקה",rejected:"נדחה",prepared:"מוכן לאישור",approved:"אושר",superseded:"מיושן"};
 const $=id=>document.getElementById(id);
@@ -182,13 +195,6 @@ async function addIncome(){if(!needBiz())return;try{const d=await api(`/api/v1/b
 async function loadDocs(){if(!needBiz())return;const s=$("d-filter").value;try{$("d-list").innerHTML=docTable(await api(`/api/v1/businesses/${B()}/documents${s?"?status="+s:""}`))}catch(e){toast(e.message)}}
 async function review(id,action,extra={}){const reviewer=$("actor").value;if(!reviewer)return toast("יש למלא שם משתמש לפני בדיקה");
   try{await api(`/api/v1/documents/${id}/review`,{method:"POST",json:{action,reviewer,...extra}});toast("עודכן",1);loadDocs()}catch(e){toast(e.message)}}
-async function editDoc(id){const d=await api(`/api/v1/documents/${id}`);const e=d.extracted;
-  const ask=(l,v)=>{const r=prompt(l,v??"");return r===null?undefined:(r===""?null:r)};
-  const fields=[["vendor_id","מספר עוסק ספק"],["doc_date","תאריך (YYYY-MM-DD)"],["pre_vat_amount","לפני מע\"מ"],["vat_amount","מע\"מ"],["total_amount","סה\"כ"],["allocation_number","מספר הקצאה"]];
-  const c={...e};for(const[k,l]of fields){const v=ask(l,e[k]);if(v===undefined)return;c[k]=v!==null&&k.endsWith("amount")?+v:v}
-  const cat=ask("קטגוריה (office_supplies/software/inventory/professional_services/vehicle/refreshments/hospitality/equipment) — ריק לאוטומטי","");
-  if(cat===undefined)return;review(id,"confirm",{corrections:c,category_override:cat})}
-
 function reportBody(r){const p=r.payload;let k="";
   if(r.kind==="vat_period")k=`<div class="kpi"><div>עסקאות חייבות<b>${money(p.sales.taxable_pre_vat)}</b></div><div>מע"מ עסקאות<b>${money(p.sales.output_vat)}</b></div><div>תשומות ציוד<b>${money(p.inputs.fixed_assets_vat)}</b></div><div>תשומות אחרות<b>${money(p.inputs.other_vat)}</b></div><div>${p.vat_payable>=0?"לתשלום":"להחזר"}<b>${money(Math.abs(p.vat_payable))}</b></div></div>`;
   if(r.kind==="income_tax_advance")k=`<div class="kpi"><div>מחזור<b>${money(p.turnover_pre_vat)}</b></div><div>שיעור<b>${p.advance_rate_percent}%</b></div><div>ניכוי במקור<b>${money(p.withholding_credit)}</b></div><div>מקדמה לתשלום<b>${money(p.advance_payable)}</b></div></div>`;
@@ -200,9 +206,6 @@ function reportBody(r){const p=r.payload;let k="";
 async function loadReports(){if(!needBiz())return;try{$("r-list").innerHTML=(await api(`/api/v1/businesses/${B()}/reports`)).filter(r=>r.status!=="superseded").map(reportBody).join("")||"<p>אין דוחות</p>"}catch(e){toast(e.message)}}
 async function prepare(){if(!needBiz())return;const k=$("r-kind").value;const q=new URLSearchParams({kind:k,year:$("r-year").value,credit_points:$("r-cp").value});if(k!=="annual_estimate")q.set("month",$("r-month").value);
   try{await api(`/api/v1/businesses/${B()}/reports?${q}`,{method:"POST"});toast("הדוח הוכן",1);loadReports()}catch(e){toast(e.message)}}
-async function approve(id){const name=prompt("שם המאשר");if(!name)return;const t=prompt("סוג רישיון: cpa / tax_advisor / lawyer","cpa");if(!t)return;const n=prompt("מספר רישיון");if(!n)return;
-  if(!confirm("אני מאשר/ת שבדקתי את הדוח ואני נושא/ת באחריות המקצועית לנכונותו"))return;
-  try{await api(`/api/v1/reports/${id}/approve`,{method:"POST",json:{approver_name:name,license_type:t,license_number:n,attest:true}});toast("הדוח אושר",1)}catch(e){toast(e.message)}loadReports()}
 async function transmit(id){try{await api(`/api/v1/reports/${id}/transmit`,{method:"POST"})}catch(e){toast(e.message)}}
 async function download(id){const r=await api(`/api/v1/reports/${id}`);saveBlob(new Blob([JSON.stringify(r,null,2)],{type:"application/json"}),`report_${id}.json`)}
 async function unified(){if(!needBiz())return;try{const r=await api(`/api/v1/businesses/${B()}/unified-file?year=${$("r-year").value}`,{raw:true});saveBlob(await r.blob(),`unified_${$("r-year").value}.zip`)}catch(e){toast(e.message)}}
@@ -228,6 +231,62 @@ async function runAdvisor(){if(!needBiz())return;const q=new URLSearchParams({ye
         <details><summary>פרטי חישוב</summary><pre>${esc(JSON.stringify(s.details,null,2))}</pre></details></div>`).join("")+
       `<div class="card"><b>לא מוצע</b><ul>${p.not_offered.map(x=>`<li>${esc(x)}</li>`).join("")}</ul><p class="f info">${esc(p.disclaimer)}</p></div>`;
   }catch(e){toast(e.message)}}
+
+/* חלון טופס אחד לכל הפעולות: שדות מתויגים, שגיאות ליד הטופס, ביטול חוזר */
+function openForm(title, fields, onSubmit, okLabel="שמירה"){
+  const dlg=$("dlg"), form=$("dlg-form"), body=$("dlg-body");
+  $("dlg-title").textContent=title; $("dlg-ok").textContent=okLabel; $("dlg-err").textContent="";
+  body.innerHTML=fields.map(f=>{
+    const id="f-"+f.name;
+    if(f.type==="checkbox")return `<label style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="${id}" style="width:auto" ${f.value?"checked":""}> ${esc(f.label)}</label>`;
+    if(f.type==="select")return `<label>${esc(f.label)}<select id="${id}">${f.options.map(([v,l])=>`<option value="${esc(v)}" ${v===f.value?"selected":""}>${esc(l)}</option>`).join("")}</select></label>`;
+    return `<label>${esc(f.label)}<input id="${id}" type="${f.type||"text"}" value="${esc(f.value??"")}" ${f.required?"required":""} ${f.step?`step="${f.step}"`:""}></label>`;
+  }).join("");
+  const onCancel=()=>dlg.close();
+  $("dlg-cancel").onclick=onCancel;
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const out={};
+    for(const f of fields){const el=$("f-"+f.name);
+      out[f.name]=f.type==="checkbox"?el.checked:(f.type==="number"?(el.value===""?null:+el.value):el.value.trim());}
+    try{await onSubmit(out);dlg.close()}catch(err){$("dlg-err").textContent=err.message}
+  };
+  dlg.showModal();
+  const first=body.querySelector("input,select"); if(first)first.focus();
+}
+
+async function editDoc(id){
+  const d=await api(`/api/v1/documents/${id}`); const e=d.extracted;
+  openForm("תיקון מסמך לפני אישור",[
+    {name:"vendor_id",label:"מספר עוסק ספק",value:e.vendor_id||e.customer_id||""},
+    {name:"doc_date",label:"תאריך",type:"date",value:e.doc_date||""},
+    {name:"pre_vat_amount",label:"לפני מע\"מ",type:"number",step:"0.01",value:e.pre_vat_amount},
+    {name:"vat_amount",label:"מע\"מ",type:"number",step:"0.01",value:e.vat_amount},
+    {name:"total_amount",label:"סה\"כ",type:"number",step:"0.01",value:e.total_amount},
+    {name:"allocation_number",label:"מספר הקצאה",value:e.allocation_number||""},
+    {name:"category_override",label:"קטגוריה (ריק = לפי הכללים)",type:"select",value:"",
+      options:[["","אוטומטי לפי הכללים"],...Object.entries(CATS)]},
+  ], async v=>{
+    const reviewer=$("actor").value; if(!reviewer)throw new Error("יש למלא שם משתמש בראש העמוד");
+    const c={...e,vendor_id:v.vendor_id||null,doc_date:v.doc_date||null,allocation_number:v.allocation_number||null,
+      pre_vat_amount:v.pre_vat_amount,vat_amount:v.vat_amount,total_amount:v.total_amount};
+    await api(`/api/v1/documents/${id}/review`,{method:"POST",json:{action:"confirm",reviewer,corrections:c,category_override:v.category_override||null}});
+    toast("המסמך תוקן ואושר",1); loadDocs();
+  }, "שמירה ואישור");
+}
+
+async function approve(id){
+  openForm("אישור מייצג מורשה",[
+    {name:"approver_name",label:"שם המאשר",required:true,value:$("actor").value},
+    {name:"license_type",label:"סוג רישיון",type:"select",value:"cpa",options:[["cpa","רואה חשבון"],["tax_advisor","יועץ מס"],["lawyer","עורך דין"]]},
+    {name:"license_number",label:"מספר רישיון",required:true},
+    {name:"attest",label:"אני מאשר/ת שבדקתי את הדוח ואני נושא/ת באחריות המקצועית לנכונותו",type:"checkbox",value:false},
+  ], async v=>{
+    if(!v.attest)throw new Error("יש לסמן את ההצהרה כדי לאשר");
+    await api(`/api/v1/reports/${id}/approve`,{method:"POST",json:v});
+    toast("הדוח אושר",1); loadReports();
+  }, "אישור");
+}
 
 show("biz");loadBiz();
 </script>

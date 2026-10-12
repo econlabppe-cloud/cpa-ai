@@ -70,6 +70,8 @@ class AuditLog(Base):
     entity: Mapped[str] = mapped_column(String(32))
     entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     details: Mapped[dict] = mapped_column(JSON, default=dict)
+    prev_hash: Mapped[str] = mapped_column(String(64), default="GENESIS")
+    row_hash: Mapped[str] = mapped_column(String(64), default="")
 
 
 def make_sessionmaker(url: str | None = None):

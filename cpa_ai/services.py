@@ -6,7 +6,9 @@
 """
 from __future__ import annotations
 
-from datetime import date
+import hashlib
+import json
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,8 +33,43 @@ class Conflict(RuntimeError):
     pass
 
 
+GENESIS = "GENESIS"
+
+
+def _canonical_ts(ts: datetime) -> str:
+    # SQLite מחזיר datetime ללא אזור זמן; מניחים UTC כך שהחישוב יחזור זהה אחרי קריאה מהמסד
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+    return ts.isoformat()
+
+
+def _row_hash(row: AuditLog) -> str:
+    payload = {
+        "id": row.id, "ts": _canonical_ts(row.ts), "actor": row.actor, "action": row.action,
+        "entity": row.entity, "entity_id": row.entity_id, "details": row.details, "prev": row.prev_hash,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+
+
 def audit(s: Session, actor: str, action: str, entity: str, entity_id: int | None, **details) -> None:
-    s.add(AuditLog(actor=actor, action=action, entity=entity, entity_id=entity_id, details=details))
+    """רשומה מקושרת לקודמתה בשרשרת hash: שינוי או מחיקה של שורה שוברים את השרשרת (ראו verify_audit)."""
+    prev = s.scalar(select(AuditLog.row_hash).order_by(AuditLog.id.desc()).limit(1)) or GENESIS
+    row = AuditLog(actor=actor, action=action, entity=entity, entity_id=entity_id, details=details,
+                   ts=datetime.now(timezone.utc), prev_hash=prev, row_hash="")
+    s.add(row)
+    s.flush()
+    row.row_hash = _row_hash(row)
+
+
+def verify_audit(s: Session) -> dict:
+    prev = GENESIS
+    count = 0
+    for row in s.scalars(select(AuditLog).order_by(AuditLog.id)):
+        count += 1
+        if row.prev_hash != prev or _row_hash(row) != row.row_hash:
+            return {"ok": False, "rows": count, "broken_at": row.id}
+        prev = row.row_hash
+    return {"ok": True, "rows": count, "broken_at": None}
 
 
 def get(s: Session, model, id_: int):
@@ -66,6 +103,7 @@ def update_consent(s: Session, business_id: int, consent: bool, actor: str) -> B
 # --- מסמכים ----------------------------------------------------------------
 def _store_expense(s: Session, biz: Business, extracted: ExtractedDocument, extractor: str,
                    raw_text: str | None, actor: str) -> Document:
+    _assert_period_open(s, biz.id, extracted.doc_date)
     decision = engine.evaluate_expense(extracted)
     doc = Document(
         business_id=biz.id, direction="expense",
@@ -98,6 +136,7 @@ def process_image(s: Session, business_id: int, image: bytes, mime: str, actor: 
 
 def add_income(s: Session, business_id: int, inc: IncomeIn, actor: str) -> Document:
     biz = get(s, Business, business_id)
+    _assert_period_open(s, biz.id, inc.doc_date)
     decision = engine.evaluate_income(inc.doc_date, inc.doc_type, inc.pre_vat_amount, inc.vat_amount,
                                       inc.customer_id, inc.allocation_number)
     doc = Document(
@@ -112,15 +151,30 @@ def add_income(s: Session, business_id: int, inc: IncomeIn, actor: str) -> Docum
     return doc
 
 
-def list_documents(s: Session, business_id: int, status: str | None) -> list[Document]:
+def list_documents(s: Session, business_id: int, status: str | None, limit: int = 100,
+                   offset: int = 0) -> list[Document]:
     q = select(Document).where(Document.business_id == business_id)
     if status:
         q = q.where(Document.status == status)
-    return list(s.scalars(q.order_by(Document.id.desc())))
+    return list(s.scalars(q.order_by(Document.id.desc()).limit(limit).offset(offset)))
+
+
+def _assert_period_open(s: Session, business_id: int, doc_date: date | None) -> None:
+    """אחרי אישור מייצג התקופה נעולה: הוספה או שינוי של מסמך בתוכה היה משנים דוח שכבר נחתם."""
+    if doc_date is None:
+        return
+    locked = s.scalar(select(Report).where(
+        Report.business_id == business_id, Report.status == "approved",
+        Report.period_start <= doc_date, Report.period_end >= doc_date))
+    if locked is not None:
+        raise Conflict(f"התאריך בתקופה של דוח מאושר (#{locked.id}) — לא ניתן להוסיף או לשנות. יש לרשום בתקופה הבאה")
 
 
 def review_document(s: Session, doc_id: int, rv: ReviewIn, actor: str) -> Document:
     doc = get(s, Document, doc_id)
+    _assert_period_open(s, doc.business_id, doc.doc_date)
+    if doc.status == "rejected" and rv.action == "confirm":
+        raise Conflict("מסמך שנדחה אינו ניתן לאישור; יש להזין אותו מחדש")
     if rv.action == "reject":
         doc.status = "rejected"
     else:

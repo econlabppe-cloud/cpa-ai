@@ -11,7 +11,7 @@ import io
 import zipfile
 from datetime import date, datetime
 
-SPEC_STATUS = "DRAFT — פריסת השדות לא אומתה מול מפרט רשות המסים"
+SPEC_STATUS = "DRAFT - field layout not verified against the Tax Authority spec"  # ASCII בלבד: הקבצים מקודדים ISO-8859-8
 SYSTEM_CONSTANT = "&OF1.31&"
 
 # (שם שדה, אורך, סוג: 'X' טקסט מיושר לימין-מרופד ברווחים, 'N' מספר מרופד באפסים, 'A' סכום עם סימן)
@@ -72,10 +72,17 @@ def build(vat_id: str, business_name: str, documents: list[dict], primary_id: in
         f"TOTAL_RECORDS={len(lines)}", *(f"{k}={v}" for k, v in counts.items()),
     ]) + "\r\n"
 
+    def _encode(text: str) -> bytes:
+        try:
+            return text.encode("iso-8859-8")
+        except UnicodeEncodeError as e:
+            bad = sorted({c for c in text if not c.isascii() and c.encode("iso-8859-8", "ignore") == b""})
+            raise ValueError(f"שגיאת קידוד: התווים {''.join(bad)} אינם ניתנים לייצוג ב-ISO-8859-8") from e
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         # המפרט הרשמי מגדיר קידוד ISO-8859-8 לעברית
-        z.writestr("INI.TXT", ini.encode("iso-8859-8", errors="replace"))
-        z.writestr("BKMVDATA.TXT", bkmv.encode("iso-8859-8", errors="replace"))
+        z.writestr("INI.TXT", _encode(ini))
+        z.writestr("BKMVDATA.TXT", _encode(bkmv))
         z.writestr("README.txt", f"{SPEC_STATUS}\nיש לתקף בסימולטור המבנה האחיד של רשות המסים.\n".encode("utf-8"))
     return buf.getvalue()

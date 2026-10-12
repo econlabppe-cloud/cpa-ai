@@ -177,7 +177,16 @@ def build_plan(
     vat_blocked: dict,
     vehicle: dict,
 ) -> dict:
+    # הניכוי מקטין את ההכנסה החייבת, ולכן המדרגה השולית נמדדת אחריו. מחשבים פעמיים לכל היותר.
     marginal = marginal_rate(max(profit, 0.0), year)
+    for _ in range(2):
+        pension = pension_plan(profit, marginal, existing_pension)
+        keren = keren_hishtalmut_plan(profit, marginal, existing_keren)
+        taxable_after = max(profit - pension["room_deduction"] - keren["room"], 0.0)
+        new_marginal = marginal_rate(taxable_after, year)
+        if new_marginal == marginal:
+            break
+        marginal = new_marginal
     pension = pension_plan(profit, marginal, existing_pension)
     keren = keren_hishtalmut_plan(profit, marginal, existing_keren)
     corp = corporate_comparison(profit, year, credit_points, material_holder)
