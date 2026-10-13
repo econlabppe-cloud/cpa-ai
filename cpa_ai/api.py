@@ -15,6 +15,7 @@ from sqlalchemy import select
 import threading
 import uuid
 
+from . import extraction
 from . import ingest as ingest_mod
 from . import services
 from .db import AuditLog, Business, Document, Report, make_sessionmaker
@@ -508,6 +509,9 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
                       "imap_configured": bool(os.getenv("CPA_AI_IMAP_HOST"))},
             "whatsapp": {"phone": biz.whatsapp_phone, "webhook_path": "/api/v1/inbound/whatsapp",
                          "configured": bool(os.getenv("CPA_AI_WHATSAPP_TOKEN") and os.getenv("CPA_AI_WHATSAPP_APP_SECRET"))},
+            "transactions": {"webhook_path": f"/api/v1/inbound/transactions/{biz.inbound_token}",
+                             "signed": bool(os.getenv("CPA_AI_TX_WEBHOOK_SECRET"))},
+            "extraction": {**extraction.capabilities(), "llm_consent": biz.llm_consent},
         }
 
     @app.put("/api/v1/businesses/{bid}/whatsapp-phone")

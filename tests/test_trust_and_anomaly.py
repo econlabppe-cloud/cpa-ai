@@ -5,16 +5,15 @@ from cpa_ai.db import Document
 from cpa_ai.home import bulk_ready
 from cpa_ai.ingest import ingest
 
-from .test_ingest import INVOICE_TEXT, env, item  # noqa: F401 — fixture
+from .test_ingest import INVOICE_TEXT, item
 
-assert env
 
 
 def codes(d):
     return {f["code"] for f in d.decision["findings"]}
 
 
-def test_first_invoice_from_unknown_vendor_by_email_needs_review(env):  # noqa: F811
+def test_first_invoice_from_unknown_vendor_by_email_needs_review(env):
     s, biz = env
     d = ingest(s, biz, item("m1", INVOICE_TEXT, source="email"), "t").documents[0]
     assert d.status == "pending_review" and "NEW_VENDOR" in codes(d)
@@ -22,7 +21,7 @@ def test_first_invoice_from_unknown_vendor_by_email_needs_review(env):  # noqa: 
     assert d.party_id == "513456780"
 
 
-def test_known_vendor_by_email_is_auto_confirmed(env):  # noqa: F811
+def test_known_vendor_by_email_is_auto_confirmed(env):
     s, biz = env
     first = ingest(s, biz, item("m0", INVOICE_TEXT), "t").documents[0]  # הועלה ידנית (upload) ואושר
     assert first.status == "confirmed"
@@ -31,7 +30,7 @@ def test_known_vendor_by_email_is_auto_confirmed(env):  # noqa: F811
     assert d.status == "confirmed" and "NEW_VENDOR" not in codes(d)
 
 
-def test_manual_upload_from_new_vendor_is_trusted(env):  # noqa: F811
+def test_manual_upload_from_new_vendor_is_trusted(env):
     s, biz = env
     d = ingest(s, biz, item("u1", INVOICE_TEXT), "t").documents[0]
     assert d.status == "confirmed"
@@ -43,7 +42,7 @@ def _inv(number: str, month: int, pre: float) -> str:
             f'סה"כ לפני מע"מ: {pre:,.2f}\nמע"מ 18%: {vat:,.2f}\nסה"כ לתשלום: {pre + vat:,.2f}\n')
 
 
-def test_amount_far_from_vendor_history_needs_review(env):  # noqa: F811
+def test_amount_far_from_vendor_history_needs_review(env):
     s, biz = env
     for i, m in enumerate((1, 2, 3)):
         assert ingest(s, biz, item(f"h{i}", _inv(f"{i}00", m, 100 + i)), "t").documents[0].status == "confirmed"
@@ -53,7 +52,7 @@ def test_amount_far_from_vendor_history_needs_review(env):  # noqa: F811
     assert normal.status == "confirmed"
 
 
-def test_party_id_backfilled_by_migration(env):  # noqa: F811
+def test_party_id_backfilled_by_migration(env):
     from cpa_ai.migrate import backfill_party_ids
     s, biz = env
     d = ingest(s, biz, item("m0", INVOICE_TEXT), "t").documents[0]

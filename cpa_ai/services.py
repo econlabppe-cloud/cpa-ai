@@ -196,14 +196,6 @@ def process_text(s: Session, business_id: int, text: str, mode: str, actor: str)
     return _store_expense(s, biz, extracted, extractor, text, actor)
 
 
-def process_image(s: Session, business_id: int, image: bytes, mime: str, actor: str) -> Document:
-    biz = get(s, Business, business_id)
-    if not biz.llm_consent:
-        raise PermissionError("פענוח תמונה מחייב ספק LLM חיצוני — העסק לא נתן הסכמה")
-    extracted = extraction.openai_llm.extract(image=image, mime=mime)
-    return _store_expense(s, biz, extracted, "openai-vision", None, actor)
-
-
 def add_income(s: Session, business_id: int, inc: IncomeIn, actor: str) -> Document:
     biz = get(s, Business, business_id)
     period_date, locked = reporting_period(s, biz.id, inc.doc_date)

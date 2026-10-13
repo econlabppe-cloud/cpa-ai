@@ -12,3 +12,6 @@ httpx>=0.27
 reportlab>=4.0      # יצירת PDF בעברית לבדיקות
 pyflakes
 cryptography>=42      # הצפנת קבצי מקור וגיבויים (אופציונלי אם לא מפעילים CPA_AI_ENCRYPTION_KEY)
+anthropic>=1.0         # חילוץ באמצעות Claude (אופציונלי; מחייב הסכמת העסק ו-ANTHROPIC_API_KEY)
+openpyxl>=3.1         # ייבוא דפי אשראי/בנק בפורמט Excel
+# OCR מקומי (לא חבילת pip): apt install tesseract-ocr tesseract-ocr-heb poppler-utils

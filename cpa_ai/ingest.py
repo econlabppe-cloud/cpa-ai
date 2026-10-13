@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 
 from . import extraction, services, storage
 from .db import Business, Document, InboundEvent
-from .extraction import openai_llm
 from .integrations.pdf_text import extract_pdf_text
 from .schemas import ExtractedDocument
 
@@ -140,6 +139,31 @@ def _store_one(s: Session, biz: Business, item: IngestItem, extracted: Extracted
     result.documents.append(doc)
 
 
+def _visual_extract(biz: Business, att: Attachment, pdf: bool):
+    """תמונה או PDF סרוק: (1) LLM בהסכמת העסק, (2) OCR מקומי, (3) None = הזנה ידנית.
+    כשל של שלב אחד עובר לשלב הבא — המסמך לא הולך לאיבוד. מחזיר (חילוץ, מחלץ, טקסט, סיבת בדיקה)."""
+    errors = []
+    if biz.llm_consent:
+        mod, name = extraction.llm_provider()
+        if mod is not None and (not pdf or name == "claude"):
+            try:
+                e = mod.extract(pdf=att.data) if pdf else mod.extract(image=att.data, mime=att.mime)
+                return e, f"{name}-vision", None, None
+            except Exception as ex:  # noqa: BLE001 — ספק חיצוני: רשת, מכסה, סירוב
+                errors.append(f"{name}: {type(ex).__name__}")
+    if extraction.ocr.available():
+        try:
+            text = extraction.ocr.pdf_to_text(att.data) if pdf else extraction.ocr.image_to_text(att.data)
+        except Exception as ex:  # noqa: BLE001
+            errors.append(f"ocr: {type(ex).__name__}")
+            text = ""
+        if text:
+            e = extraction.ocr_extract(text)
+            note = "נקרא ב-OCR — לוודא סכומים ומספר עוסק מול המקור" + (f" ({'; '.join(errors)})" if errors else "")
+            return e, "ocr+heuristic", text, (note if e.doc_type == "unknown" or e.total_amount is None else None)
+    return None
+
+
 def claim_event(s: Session, source: str, source_ref: str, business_id: int | None) -> bool:
     """True אם זו הפעם הראשונה שמטפלים בהודעה. שליחה חוזרת של webhook מחזירה False."""
     try:
@@ -171,9 +195,14 @@ def ingest(s: Session, biz: Business, item: IngestItem, actor: str, mode: str = 
         if kind == "pdf":
             text, info = extract_pdf_text(att.data)
             if not text:
-                _store_one(s, biz, item, ExtractedDocument(doc_type="unknown", extraction_confidence=0.0),
-                           "pdf-unreadable", None, att, digest, result, actor,
-                           force_review=f"{info['reason']} — יש להזין ידנית או להפעיל חילוץ בתמונה")
+                got = _visual_extract(biz, att, pdf=True)
+                if got:
+                    e, extractor, raw, force = got
+                    _store_one(s, biz, item, e, extractor, raw, att, digest, result, actor, force_review=force)
+                else:
+                    _store_one(s, biz, item, ExtractedDocument(doc_type="unknown", extraction_confidence=0.0),
+                               "pdf-unreadable", None, att, digest, result, actor,
+                               force_review=f"{info['reason']} — יש להזין ידנית או להפעיל OCR / חילוץ בבינה מלאכותית")
             else:
                 e, extractor = extraction.extract_text(text, mode, biz.llm_consent)
                 force = None if info["reliable"] else f"{info['reason']} — לבדיקה"
@@ -192,9 +221,10 @@ def ingest(s: Session, biz: Business, item: IngestItem, actor: str, mode: str = 
             if strict and (handled or len(att.data) < MIN_EMAIL_IMAGE_BYTES):
                 result.notes.append(f"תמונה במייל דולגה (כנראה לוגו): {att.filename}")
                 continue
-            if biz.llm_consent and openai_llm.available():
-                e = openai_llm.extract(image=att.data, mime=att.mime)
-                _store_one(s, biz, item, e, "openai-vision", None, att, digest, result, actor)
+            got = _visual_extract(biz, att, pdf=False)
+            if got:
+                e, extractor, raw, force = got
+                _store_one(s, biz, item, e, extractor, raw, att, digest, result, actor, force_review=force)
             else:
                 _store_one(s, biz, item, ExtractedDocument(doc_type="unknown", extraction_confidence=0.0),
                            "image-manual", None, att, digest, result, actor,

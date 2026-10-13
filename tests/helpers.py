@@ -44,3 +44,24 @@ def blank_pdf() -> bytes:
     c.showPage()
     c.save()
     return b.getvalue()
+
+
+def make_image(lines=INVOICE_LINES, fmt="PNG") -> bytes:
+    """צילום חשבונית מדומה: טקסט לוגי, PIL+raqm מסדר את העברית מימין לשמאל כמו על נייר."""
+    from PIL import Image, ImageDraw, ImageFont
+    f = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+    im = Image.new("RGB", (900, 60 + 54 * len(lines)), "white")
+    d = ImageDraw.Draw(im)
+    for i, ln in enumerate(lines):
+        d.text((860 - d.textlength(ln, font=f), 20 + i * 54), ln, fill="black", font=f)
+    buf = io.BytesIO()
+    im.save(buf, fmt)
+    return buf.getvalue()
+
+
+def scanned_pdf(lines=INVOICE_LINES) -> bytes:
+    """PDF סרוק: תמונה בלבד, בלי שכבת טקסט."""
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.open(io.BytesIO(make_image(lines))).save(buf, "PDF", resolution=100)
+    return buf.getvalue()

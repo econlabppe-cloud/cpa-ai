@@ -73,7 +73,7 @@ class BusinessOut(BusinessIn):
 
 class ProcessTextIn(BaseModel):
     text: str = Field(min_length=1, max_length=200_000)
-    extractor: Literal["auto", "heuristic", "openai"] = "auto"
+    extractor: Literal["auto", "heuristic", "openai", "claude"] = "auto"
 
 
 class IncomeIn(BaseModel):

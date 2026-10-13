@@ -6,24 +6,11 @@ from sqlalchemy import select
 from cpa_ai import services, storage
 from cpa_ai.db import Business, Document, make_sessionmaker
 from cpa_ai.ingest import Attachment, IngestItem, ingest
-from cpa_ai.schemas import BusinessIn, ReviewIn
+from cpa_ai.schemas import ReviewIn
 
 from .helpers import INVOICE_LINES, blank_pdf, make_pdf
 
 INVOICE_TEXT = "\n".join(INVOICE_LINES)
-
-
-@pytest.fixture(autouse=True)
-def data_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("CPA_AI_DATA_DIR", str(tmp_path / "data"))
-
-
-@pytest.fixture
-def env():
-    Session = make_sessionmaker("sqlite://")
-    s = Session()
-    biz = services.create_business(s, BusinessIn(name="סטודיו", vat_id="037544129", owner_name="דנה"), "t")
-    return s, biz
 
 
 def item(ref, text=None, atts=(), source="upload"):
