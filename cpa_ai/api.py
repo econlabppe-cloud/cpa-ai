@@ -23,7 +23,7 @@ from .integrations.addresses import inbound_address
 from .rules import data
 from .security import Principal, RateLimiter, parse_users
 from .schemas import (ApprovalIn, BusinessIn, BusinessOut, DocumentOut, IncomeIn, ProcessTextIn, ReportOut,
-                      MarkPaidIn, ProfileIn, ReplyIn, ReviewIn, ThreadIn, TxBatchIn, WhatIfIn)
+                      MarkPaidIn, OptimizeIn, ProfileIn, ReplyIn, ReviewIn, ThreadIn, TxBatchIn, WhatIfIn)
 
 STATIC = Path(__file__).parent / "static"
 SAFE_SERVE_MIMES = {"application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp", "text/plain"}
@@ -835,6 +835,39 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
         s.commit()
         return advise(s, biz, year, credit_points, existing_pension, existing_keren, material_holder,
                       projected_profit=projected_profit, carried_loss=carried_loss, donations=donations)
+
+    @app.post("/api/v1/businesses/{bid}/advisor/optimize")
+    def advisor_optimize(bid: int, body: OptimizeIn, s=Depends(session), who=Depends(actor)):
+        """תכנון משולב: חלוקת התקציב בין המנופים, מיקום במדרגות, תזמון הכנסה בין שנים, ומילואים."""
+        from datetime import date as _d
+
+        from .advisor import optimizer, profit_basis
+        from .reports import periodic
+        biz = services.get(s, Business, bid)
+        est = periodic.build_annual_estimate(s, biz, body.year, body.credit_points, body.donations_done,
+                                             body.carried_loss)
+        pb = profit_basis(est["business_profit"], body.year, _d.today(), body.projected_profit)
+        profit = pb["profit"]
+        plan = optimizer.optimize(profit, body.year, body.credit_points, body.budget,
+                                  existing_pension=body.existing_pension, existing_keren=body.existing_keren,
+                                  carried_loss=body.carried_loss, planned_donations=body.planned_donations,
+                                  donations_done=body.donations_done)
+        from .tax_model import estimate_burden
+        taxable = estimate_burden(profit, body.year, body.credit_points, carried_loss=body.carried_loss)["taxable_income"]
+        out = {
+            "profit_basis": pb, "plan": plan, "bracket": optimizer.bracket_position(taxable, body.year),
+            "timing": (optimizer.income_timing(profit, body.next_year_profit, body.year, body.credit_points)
+                       if body.next_year_profit is not None else None),
+            "reserve_duty": (optimizer.reserve_duty(body.reserve.planned_days, body.reserve.ni_monthly_base,
+                                                    body.reserve.actual_monthly_income) if body.reserve else None),
+            "disclaimer": ("תכנון מס לגיטימי בלבד, על בסיס פרמטרים שלא אומתו מול רשות המסים וביטוח לאומי. "
+                           "להכנה לשיחה עם המייצג — לא ייעוץ מחייב. לא מוצעים: הסתרת הכנסה, הוצאות פיקטיביות, "
+                           "דחיית חשבונית על עסקה שבוצעה, או דיווח הכנסה לא אמיתי לביטוח לאומי"),
+        }
+        services.audit(s, who, "advisor_optimize", "business", biz.id, year=body.year, budget=body.budget,
+                       saving=plan["total_saving"])
+        s.commit()
+        return out
 
     @app.post("/api/v1/businesses/{bid}/advisor/what-if")
     def advisor_what_if(bid: int, body: WhatIfIn, s=Depends(session), who=Depends(actor)):

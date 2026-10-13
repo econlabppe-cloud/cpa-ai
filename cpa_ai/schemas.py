@@ -171,6 +171,26 @@ class MarkPaidIn(BaseModel):
     unpaid: bool = Field(False, description="ביטול סימון תשלום")
 
 
+class ReserveIn(BaseModel):
+    planned_days: int = Field(ge=0, le=365)
+    ni_monthly_base: float = Field(ge=0, description="הכנסה חודשית שלפיה נקבעו המקדמות לביטוח לאומי")
+    actual_monthly_income: float = Field(ge=0, description="הכנסה חודשית אמיתית צפויה")
+
+
+class OptimizeIn(BaseModel):
+    year: int = Field(ge=2015, le=2100)
+    budget: float = Field(ge=0, le=10_000_000, description="כמה כסף פנוי להפקדות/תרומות עד סוף השנה")
+    credit_points: float = Field(2.25, ge=0, le=20)
+    projected_profit: Optional[float] = None
+    next_year_profit: Optional[float] = None
+    existing_pension: float = Field(0.0, ge=0)
+    existing_keren: float = Field(0.0, ge=0)
+    carried_loss: float = Field(0.0, ge=0)
+    planned_donations: float = Field(0.0, ge=0)
+    donations_done: float = Field(0.0, ge=0)
+    reserve: Optional[ReserveIn] = None
+
+
 class WhatIfIn(BaseModel):
     year: int = Field(ge=2015, le=2100)
     credit_points: float = Field(2.25, ge=0, le=20)
