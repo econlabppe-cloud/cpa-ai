@@ -1,6 +1,9 @@
 """מנוע הכללים: מקבל עובדות שחולצו, מחזיר החלטת מס דטרמיניסטית עם עקבה משפטית."""
 from __future__ import annotations
 
+import calendar
+from datetime import date
+
 from .. import depreciation
 from ..schemas import ExtractedDocument, TaxDecision
 from . import checks, data
@@ -40,7 +43,15 @@ def classify(extracted: ExtractedDocument, override: str | None = None) -> tuple
     return data.CATEGORIES["unknown"], Finding("CATEGORY_UNKNOWN", "warning", "לא נמצאה קטגוריה מתאימה")
 
 
-def evaluate_expense(extracted: ExtractedDocument, category_override: str | None = None) -> TaxDecision:
+def add_months(d: date, months: int) -> date:
+    m = d.month - 1 + months
+    y, m = d.year + m // 12, m % 12 + 1
+    return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def evaluate_expense(extracted: ExtractedDocument, category_override: str | None = None,
+                     report_date: date | None = None) -> TaxDecision:
+    """report_date: תחילת התקופה שבה המסמך ידווח, כשהיא מאוחרת מתקופת המסמך (מסמך שהגיע באיחור)."""
     trace = RuleTrace()
 
     if extracted.doc_date is None:
@@ -51,6 +62,9 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
         trace.apply("vat_rate", rate, data.VAT_RATE_SOURCE)
 
     foreign = extracted.is_foreign_vendor
+    # חשבונית זיכוי מספק מבטלת חלק מחשבונית מס קודמת: סכומיה נבדקים כמו חשבונית מס, ותוצאתה שלילית
+    credit = extracted.doc_type == "credit_invoice"
+    vat_doc = credit or extracted.doc_type in data.VAT_DEDUCTIBLE_DOC_TYPES
     pre, vat, total = extracted.pre_vat_amount, extracted.vat_amount, extracted.total_amount
     if foreign:
         # חשבונית זרה: בלי מע"מ ישראלי, ואין מספר עוסק ישראלי. הסכום נקבע בש"ח לפי שער ביום החיוב
@@ -66,13 +80,17 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
                           "ספק זר: אין ניכוי מע\"מ תשומות. ייתכן שנדרשת חשבונית עצמית לדיווח מע\"מ (ייבוא שירותים) — "
                           "מקורות סותרים, לבדיקת המייצג", data.FOREIGN_VAT_SOURCE.citation))
     elif rate is not None:
-        pre, vat, total, f = checks.check_amounts(pre, vat, total, rate, extracted.doc_type)
+        pre, vat, total, f = checks.check_amounts(pre, vat, total, rate, "tax_invoice" if credit else extracted.doc_type)
         trace.add(*f)
     elif total is None:
         trace.add(Finding("TOTAL_MISSING", "error", "סכום כולל לא זוהה"))
 
     if extracted.doc_type == "unknown":
         trace.add(Finding("DOC_TYPE_UNKNOWN", "error", "סוג המסמך לא זוהה"))
+    elif credit:
+        trace.add(Finding("CREDIT_NOTE", "warning",
+                          "חשבונית זיכוי מספק: מקטינה את ההוצאה ואת מע\"מ התשומות שנוכה. יש לוודא שהחשבונית "
+                          "המקורית נרשמה ושהזיכוי לא נרשם כבר", data.DOC_TYPE_SOURCE.citation))
     elif extracted.doc_type not in data.VAT_DEDUCTIBLE_DOC_TYPES:
         trace.add(Finding("NO_VAT_DEDUCTION_DOC", "info",
                           "המסמך אינו חשבונית מס — לא ניתן לנכות ממנו מע\"מ תשומות", data.DOC_TYPE_SOURCE.citation))
@@ -81,7 +99,7 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
     if foreign:
         vendor_valid = False  # אין מספר עוסק ישראלי; לא שגיאה
     elif not extracted.vendor_id:
-        sev = "error" if extracted.doc_type in data.VAT_DEDUCTIBLE_DOC_TYPES else "warning"
+        sev = "error" if vat_doc else "warning"
         trace.add(Finding("VENDOR_ID_MISSING", sev, "מספר עוסק של הספק לא זוהה"))
     elif not vendor_valid:
         trace.add(Finding("VENDOR_ID_INVALID", "error", f"ספרת הביקורת של מספר העוסק {extracted.vendor_id} שגויה"))
@@ -100,6 +118,17 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
 
     blocked_vat = any(f.code in {"ALLOCATION_MISSING", "ALLOCATION_MALFORMED", "VENDOR_ID_INVALID"} for f in trace.findings)
     vat_ok = extracted.doc_type in data.VAT_DEDUCTIBLE_DOC_TYPES and not blocked_vat and not foreign
+    window = int(data.INPUT_VAT_WINDOW_MONTHS.value)
+    if (vat_ok and not credit and report_date and extracted.doc_date
+            and report_date > add_months(extracted.doc_date, window)):
+        vat_ok = False
+        trace.add(Finding("VAT_DEDUCTION_LATE", "warning",
+                          f"החשבונית מ-{extracted.doc_date:%d/%m/%Y} מדווחת בתקופה שמתחילה ב-{report_date:%d/%m/%Y} — "
+                          f"מעבר ל-{window} חודשים, ולכן מע\"מ התשומות אינו מנוכה (נכלל בעלות ההוצאה). לבדיקת המייצג",
+                          data.INPUT_VAT_WINDOW_MONTHS.source.citation))
+    if credit:
+        # ביטול ניכוי הוא שמרני: מקטינים את התשומות גם כשמספר העוסק שגוי
+        vat_ok = not foreign
 
     cash_over = (extracted.payment_method == "cash" and total is not None and total >= data.CASH_LIMIT.value)
     if cash_over:
@@ -113,6 +142,8 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
     # מע"מ שאינו מנוכה הופך לחלק מעלות ההוצאה
     expense_base = (pre or 0.0) + ((vat or 0.0) - deductible_vat)
     recognized = round(expense_base * category.income_tax_recognition, 2)
+    if credit:
+        deductible_vat, recognized = -deductible_vat, -recognized
     if category.is_fixed_asset:
         trace.add(Finding("FIXED_ASSET", "info", "רכוש קבוע — יש להוסיף ללוח הפחת", category.source.citation))
 
@@ -125,6 +156,7 @@ def evaluate_expense(extracted: ExtractedDocument, category_override: str | None
         or not category.source.verified
         or category.key == "unknown"
         or cash_over
+        or credit
         or any(f.code == "FOREIGN_CURRENCY" for f in trace.findings)
     )
 

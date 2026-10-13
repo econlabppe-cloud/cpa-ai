@@ -11,7 +11,7 @@ import json
 from collections import defaultdict
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import Business, Document
@@ -37,12 +37,15 @@ def vat_period_bounds(year: int, month: int, frequency: str) -> tuple[date, date
     return date(year, first, 1), date(year, last, calendar.monthrange(year, last)[1])
 
 
-def _docs(s: Session, business_id: int, start: date, end: date) -> list[Document]:
+def _docs(s: Session, business_id: int, start: date, end: date, by_period: bool = False) -> list[Document]:
+    """by_period: לפי תקופת הדיווח (מע"מ ומקדמות) — מסמך מאוחר נכלל בתקופה שאליה שויך.
+    בלי: לפי תאריך המסמך (הערכה שנתית — ההכנסה וההוצאה שייכות לשנת המסמך)."""
+    when = func.coalesce(Document.period_date, Document.doc_date) if by_period else Document.doc_date
     return list(s.scalars(
         select(Document).where(
             Document.business_id == business_id,
-            Document.doc_date >= start,
-            Document.doc_date <= end,
+            when >= start,
+            when <= end,
             Document.status != "rejected",
         ).order_by(Document.doc_date, Document.id)
     ))
@@ -58,7 +61,7 @@ def _undated_pending(s: Session, business_id: int) -> int:
 
 
 def build_vat_period(s: Session, biz: Business, start: date, end: date) -> dict:
-    docs = _docs(s, biz.id, start, end)
+    docs = _docs(s, biz.id, start, end, by_period=True)
     confirmed = [d for d in docs if d.status == "confirmed"]
     sales_pre = sales_vat = eq_vat = other_vat = 0.0
     for d in confirmed:
@@ -95,7 +98,7 @@ def build_vat_period(s: Session, biz: Business, start: date, end: date) -> dict:
 
 
 def build_income_tax_advance(s: Session, biz: Business, start: date, end: date) -> dict:
-    docs = _docs(s, biz.id, start, end)
+    docs = _docs(s, biz.id, start, end, by_period=True)
     income = [d for d in docs if d.status == "confirmed" and d.direction == "income"]
     turnover = 0.0
     withholding = 0.0
@@ -146,6 +149,11 @@ def income_tax(taxable: float, year: int, credit_points: float) -> tuple[float, 
     return total, rows, ty
 
 
+def _asset_cost_sign(extracted: dict) -> int:
+    """זיכוי מספק על רכוש קבוע מקטין את עלות הנכס ואת הפחת."""
+    return -1 if extracted.get("doc_type") == "credit_invoice" else 1
+
+
 def _fixed_asset_docs(s: Session, business_id: int, upto_year: int) -> list[Document]:
     """רכוש קבוע שנרכש בכל שנה עד `upto_year` — נדרש כי הפחת נמשך על פני שנים."""
     return [d for d in s.scalars(select(Document).where(
@@ -176,8 +184,10 @@ def build_annual_estimate(s: Session, biz: Business, year: int, credit_points: f
         cost = (dec.get("pre_vat_amount") or 0.0) + ((dec.get("vat_amount") or 0.0) - (dec.get("deductible_vat") or 0.0))
         cls = dec.get("asset_class") or "other"
         rate = data.DEPRECIATION[cls].value
-        amount = dep.depreciation_for_year(cost, d.doc_date, rate, year)
-        if amount > 0:
+        sign = _asset_cost_sign(d.extracted)
+        amount = sign * dep.depreciation_for_year(cost, d.doc_date, rate, year)
+        cost *= sign
+        if amount != 0:
             depreciation_lines.append({"document_id": d.id, "vendor": d.extracted.get("vendor_name"),
                                        "purchased": d.doc_date.isoformat(), "asset_class": cls, "rate": rate,
                                        "cost": r2(cost), "depreciation": amount})

@@ -52,6 +52,23 @@ def backfill_inbound_tokens(engine: Engine) -> int:
     return n
 
 
+def backfill_party_ids(engine: Engine) -> int:
+    from sqlalchemy.orm import Session
+
+    from .db import Document
+    from .services import party_id_of
+    n = 0
+    with Session(engine) as s:
+        for d in s.query(Document).filter(Document.party_id.is_(None)):
+            pid = party_id_of(d.extracted or {})
+            if pid:
+                d.party_id = pid
+                n += 1
+        s.commit()
+    return n
+
+
 def migrate(engine: Engine) -> dict:
     added = ensure_columns(engine)
-    return {"added_columns": added, "tokens_backfilled": backfill_inbound_tokens(engine)}
+    return {"added_columns": added, "tokens_backfilled": backfill_inbound_tokens(engine),
+            "party_ids_backfilled": backfill_party_ids(engine)}

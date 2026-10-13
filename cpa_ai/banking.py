@@ -128,6 +128,12 @@ def _tokens(text: str) -> set[str]:
     return {t for t in re.split(r"[^\w֐-׿]+", (text or "").lower()) if len(t) >= 2}
 
 
+def money_flow(d: Document) -> int:
+    """כיוון התנועה הצפויה בבנק: הכנסה נכנסת, הוצאה יוצאת, וחשבונית זיכוי הופכת את הכיוון."""
+    sign = 1 if d.direction == "income" else -1
+    return -sign if d.extracted.get("doc_type") == "credit_invoice" else sign
+
+
 def auto_match(s: Session, business_id: int) -> int:
     txs = list(s.scalars(select(BankTransaction).where(
         BankTransaction.business_id == business_id, BankTransaction.status == "open")))
@@ -137,11 +143,10 @@ def auto_match(s: Session, business_id: int) -> int:
         BankTransaction.business_id == business_id, BankTransaction.matched_document_id.is_not(None)))}
     matched = 0
     for tx in sorted(txs, key=lambda t: t.tx_date):
-        want = "expense" if tx.amount < 0 else "income"
         cands = []
         for d in docs:
             total = d.decision.get("total_amount")
-            if d.direction != want or d.id in taken or total is None:
+            if d.id in taken or total is None or money_flow(d) * tx.amount <= 0:
                 continue
             if abs(abs(total) - abs(tx.amount)) > 0.01:
                 continue

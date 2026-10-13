@@ -61,7 +61,10 @@ def test_routed_webhook_ingests_pdf_and_is_idempotent(client, biz):
     assert r1.status_code == 202 and len(r1.json()["documents"]) == 1
     assert client.post("/api/v1/inbound/email", content=raw, headers=RFC822).json()["skipped"] is True
     docs = client.get(f"/api/v1/businesses/{bid}/documents", headers=H).json()
-    assert len(docs) == 1 and docs[0]["decision"]["total_amount"] == 1180.0 and docs[0]["status"] == "confirmed"
+    assert len(docs) == 1 and docs[0]["decision"]["total_amount"] == 1180.0
+    # ספק שלא הופיע קודם ומגיע במייל — ממתין לאישור אנושי אחד (הגנה מפני חשבונית מזויפת)
+    assert docs[0]["status"] == "pending_review"
+    assert "NEW_VENDOR" in {f["code"] for f in docs[0]["decision"]["findings"]}
 
 
 def test_routed_webhook_without_token_is_rejected(client, biz):

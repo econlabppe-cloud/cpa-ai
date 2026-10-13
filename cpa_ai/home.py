@@ -15,7 +15,8 @@ from .rules import data
 
 # ממצאים שמונעים אישור מרוכז: הם דורשים עין אנושית
 NOT_BULK_CODES = {"RULE_UNVERIFIED", "FORCED_REVIEW", "CATEGORY_UNKNOWN", "CATEGORY_AMBIGUOUS",
-                  "CATEGORY_HINT_CONFLICT", "CATEGORY_FROM_HINT"}
+                  "CATEGORY_HINT_CONFLICT", "CATEGORY_FROM_HINT", "NEW_VENDOR", "AMOUNT_ANOMALY",
+                  "CREDIT_NOTE", "LATE_DOCUMENT", "LATE_INCOME", "VAT_DEDUCTION_LATE", "ANNUAL_CLOSED"}
 
 
 def bulk_ready(doc: Document, include_unverified: bool = False) -> tuple[bool, str]:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -109,19 +109,67 @@ def vendor_category(s: Session, business_id: int, vendor_id: str | None) -> str 
     return rule.category if rule else None
 
 
+# ערוצים שכל מי שמחזיק בכתובת יכול לשלוח אליהם (מייל). WhatsApp מאומת לפי מספר הבעלים וחתימת Meta
+UNTRUSTED_SOURCES = {"email"}
+ANOMALY_MIN_HISTORY = 3
+ANOMALY_FACTOR = 5.0
+
+
+def party_id_of(extracted: dict) -> str | None:
+    pid = extracted.get("vendor_id") or extracted.get("customer_id")
+    pid = "".join(ch for ch in str(pid or "") if ch.isdigit())
+    return pid.zfill(9) if pid and len(pid) <= 9 else None
+
+
+def _history_checks(s: Session, biz_id: int, extracted: ExtractedDocument, source: str) -> list[dict]:
+    """בדיקות מול היסטוריית הספק: ספק חדש בערוץ לא מאומת (חשבונית מזויפת) וסכום חריג (טעות חילוץ)."""
+    pid = party_id_of({"vendor_id": extracted.vendor_id})
+    if not pid or extracted.is_foreign_vendor:
+        return []
+    totals = [d.decision.get("total_amount") for d in s.scalars(select(Document).where(
+        Document.business_id == biz_id, Document.direction == "expense", Document.status == "confirmed",
+        Document.party_id == pid))]
+    totals = sorted(t for t in totals if t)
+    out = []
+    if not totals and source in UNTRUSTED_SOURCES:
+        out.append({"code": "NEW_VENDOR", "severity": "warning", "source": "",
+                    "message": f"חשבונית ראשונה מ-{extracted.vendor_name or pid} שהגיעה במייל — לאשר שזה ספק אמיתי "
+                               "שעובדים איתו (הגנה מפני חשבוניות מזויפות). מהחשבונית הבאה האישור אוטומטי"})
+    total = extracted.total_amount
+    if len(totals) >= ANOMALY_MIN_HISTORY and total:
+        median = totals[len(totals) // 2] if len(totals) % 2 else (totals[len(totals) // 2 - 1] + totals[len(totals) // 2]) / 2
+        if total > median * ANOMALY_FACTOR or total < median / ANOMALY_FACTOR:
+            out.append({"code": "AMOUNT_ANOMALY", "severity": "warning", "source": "",
+                        "message": f"הסכום {total:,.2f} ₪ חריג לעומת החשבוניות הקודמות מהספק (חציון {median:,.2f} ₪) — "
+                                   "לוודא שהסכום חולץ נכון"})
+    return out
+
+
 def _store_expense(s: Session, biz: Business, extracted: ExtractedDocument, extractor: str,
                    raw_text: str | None, actor: str, *, meta: dict | None = None,
                    force_review: str | None = None) -> Document:
     """meta: source/source_ref/content_hash/dedupe_key/attachment_* (ראו ingest.py).
     force_review: טקסט ממצא שמכריח בדיקה אנושית (למשל תמונה שלא חולצה)."""
-    _assert_period_open(s, biz.id, extracted.doc_date)
+    period_date, locked = reporting_period(s, biz.id, extracted.doc_date)
     remembered = vendor_category(s, biz.id, extracted.vendor_id)
-    decision = engine.evaluate_expense(extracted, remembered)
+    decision = engine.evaluate_expense(extracted, remembered, report_date=period_date)
     findings = list(decision.findings)
+    if period_date:
+        findings.append(_late_finding("LATE_DOCUMENT", extracted.doc_date, period_date, locked,
+                                      "ההוצאה תדווח בתקופה הפתוחה; בדוח השנתי היא נשארת בשנת המסמך"))
+        force_review = force_review or "מסמך שהגיע אחרי שתקופתו אושרה"
+    annual = _annual_locked(s, biz.id, extracted.doc_date)
+    if annual:
+        findings.append(annual)
+        force_review = force_review or "השנה של המסמך כבר נסגרה בהערכה שנתית מאושרת"
     if remembered:
         findings.append({"code": "VENDOR_MEMORY", "severity": "info",
                          "message": f"הסיווג נלקח מזיכרון הספק (קבעת בעבר: {remembered})", "source": ""})
     needs_review = decision.needs_human_review
+    history = _history_checks(s, biz.id, extracted, (meta or {}).get("source", "manual"))
+    if history:
+        findings.extend(history)
+        needs_review = True
     if force_review:
         findings.append({"code": "FORCED_REVIEW", "severity": "warning", "message": force_review, "source": ""})
         needs_review = True
@@ -129,7 +177,8 @@ def _store_expense(s: Session, biz: Business, extracted: ExtractedDocument, extr
     doc = Document(
         business_id=biz.id, direction="expense",
         status="pending_review" if needs_review else "confirmed",
-        extractor=extractor, doc_date=extracted.doc_date,
+        extractor=extractor, doc_date=extracted.doc_date, period_date=period_date,
+        party_id=party_id_of({"vendor_id": extracted.vendor_id}),
         extracted=extracted.model_dump(mode="json"), decision=decision.model_dump(mode="json"),
         raw_text=raw_text, **(meta or {}),
     )
@@ -157,13 +206,24 @@ def process_image(s: Session, business_id: int, image: bytes, mime: str, actor: 
 
 def add_income(s: Session, business_id: int, inc: IncomeIn, actor: str) -> Document:
     biz = get(s, Business, business_id)
-    _assert_period_open(s, biz.id, inc.doc_date)
+    period_date, locked = reporting_period(s, biz.id, inc.doc_date)
     decision = engine.evaluate_income(inc.doc_date, inc.doc_type, inc.pre_vat_amount, inc.vat_amount,
                                       inc.customer_id, inc.allocation_number)
+    if period_date:
+        decision["findings"].append(_late_finding(
+            "LATE_INCOME", inc.doc_date, period_date, locked,
+            "מע\"מ עסקאות שייך לתקופת העסקה: ייתכן שנדרש דוח מתקן לתקופה המקורית (עם הפרשי הצמדה וריבית) "
+            "במקום דיווח בתקופה הנוכחית — החלטת המייצג"))
+        decision["needs_human_review"] = True
+    annual = _annual_locked(s, biz.id, inc.doc_date)
+    if annual:
+        decision["findings"].append(annual)
+        decision["needs_human_review"] = True
     doc = Document(
         business_id=biz.id, direction="income",
         status="pending_review" if decision["needs_human_review"] else "confirmed",
-        extractor="manual", doc_date=inc.doc_date, extracted=inc.model_dump(mode="json"), decision=decision,
+        extractor="manual", doc_date=inc.doc_date, period_date=period_date,
+        party_id=party_id_of({"customer_id": inc.customer_id}), extracted=inc.model_dump(mode="json"), decision=decision,
     )
     s.add(doc)
     s.flush()
@@ -180,12 +240,52 @@ def list_documents(s: Session, business_id: int, status: str | None, limit: int 
     return list(s.scalars(q.order_by(Document.id.desc()).limit(limit).offset(offset)))
 
 
+# דוחות שאישורם נועל תקופה לצורך שיוך מסמך מאוחר. הערכה שנתית אינה דוח מוגש ואינה מזיזה מסמכים
+PERIOD_KINDS = ("vat_period", "income_tax_advance")
+
+
+def reporting_period(s: Session, business_id: int, doc_date: date | None) -> tuple[date | None, list[int]]:
+    """אם תאריך המסמך נופל בתקופה שדוחה אושר — מחזיר את תחילת התקופה הפתוחה הבאה ואת הדוחות הנועלים.
+    אחרת (None, []): המסמך מדווח בתקופת תאריכו."""
+    if doc_date is None:
+        return None, []
+    d, hit = doc_date, []
+    while True:
+        locked = s.scalars(select(Report).where(
+            Report.business_id == business_id, Report.status == "approved", Report.kind.in_(PERIOD_KINDS),
+            Report.period_start <= d, Report.period_end >= d).order_by(Report.period_end.desc())).first()
+        if locked is None:
+            break
+        hit.append(locked.id)
+        d = locked.period_end + timedelta(days=1)
+    return (d, hit) if hit else (None, [])
+
+
+def _late_finding(code: str, doc_date: date, period_date: date, locked: list[int], extra: str) -> dict:
+    return {"code": code, "severity": "warning", "source": "",
+            "message": f"המסמך מ-{doc_date:%d/%m/%Y} הגיע אחרי שהתקופה אושרה (דוח #{locked[0]}) — "
+                       f"שויך לתקופה שמתחילה ב-{period_date:%d/%m/%Y}. {extra}"}
+
+
+def _annual_locked(s: Session, business_id: int, doc_date: date | None) -> dict | None:
+    if doc_date is None:
+        return None
+    rep = s.scalar(select(Report).where(
+        Report.business_id == business_id, Report.status == "approved", Report.kind == "annual_estimate",
+        Report.period_start <= doc_date, Report.period_end >= doc_date))
+    if rep is None:
+        return None
+    return {"code": "ANNUAL_CLOSED", "severity": "warning", "source": "",
+            "message": f"ההערכה השנתית ל-{doc_date.year} כבר אושרה (#{rep.id}) — המסמך משנה אותה; "
+                       "ייתכן שנדרש דוח שנתי מתקן"}
+
+
 def _assert_period_open(s: Session, business_id: int, doc_date: date | None) -> None:
     """אחרי אישור מייצג התקופה נעולה: הוספה או שינוי של מסמך בתוכה היה משנים דוח שכבר נחתם."""
     if doc_date is None:
         return
     locked = s.scalar(select(Report).where(
-        Report.business_id == business_id, Report.status == "approved",
+        Report.business_id == business_id, Report.status == "approved", Report.kind.in_(PERIOD_KINDS),
         Report.period_start <= doc_date, Report.period_end >= doc_date))
     if locked is not None:
         raise Conflict(f"התאריך בתקופה של דוח מאושר (#{locked.id}) — לא ניתן להוסיף או לשנות. יש לרשום בתקופה הבאה")
@@ -203,7 +303,9 @@ def _remember_vendor(s: Session, business_id: int, extracted: ExtractedDocument,
 
 def review_document(s: Session, doc_id: int, rv: ReviewIn, actor: str) -> Document:
     doc = get(s, Document, doc_id)
-    _assert_period_open(s, doc.business_id, doc.doc_date)
+    _assert_period_open(s, doc.business_id, doc.period_date or doc.doc_date)
+    if doc.status == "confirmed" and _annual_locked(s, doc.business_id, doc.doc_date):
+        raise Conflict("המסמך נכלל בהערכה שנתית מאושרת — לא ניתן לשנותו")
     if doc.status == "rejected" and rv.action == "confirm":
         raise Conflict("מסמך שנדחה אינו ניתן לאישור; יש להזין אותו מחדש")
     if rv.action == "reject":
@@ -211,14 +313,16 @@ def review_document(s: Session, doc_id: int, rv: ReviewIn, actor: str) -> Docume
     else:
         if doc.direction == "expense":
             extracted = rv.corrections or ExtractedDocument.model_validate(doc.extracted)
-            decision = engine.evaluate_expense(extracted, rv.category_override)
+            period_date, _ = reporting_period(s, doc.business_id, extracted.doc_date)
+            decision = engine.evaluate_expense(extracted, rv.category_override, report_date=period_date)
             blocking = [f for f in decision.findings
                         if f["severity"] == "error" and f["code"] not in NON_BLOCKING_ON_REVIEW]
             if blocking:
                 raise Conflict("לא ניתן לאשר מסמך עם שגיאות חוסמות: " + "; ".join(f["message"] for f in blocking))
             doc.extracted = extracted.model_dump(mode="json")
             doc.decision = decision.model_dump(mode="json")
-            doc.doc_date = extracted.doc_date
+            doc.doc_date, doc.period_date = extracted.doc_date, period_date
+            doc.party_id = party_id_of({"vendor_id": extracted.vendor_id})
             if rv.category_override and extracted.vendor_id and decision.vendor_id_valid:
                 _remember_vendor(s, doc.business_id, extracted, rv.category_override, rv.reviewer)
         elif any(f["severity"] == "error" for f in doc.decision["findings"]):

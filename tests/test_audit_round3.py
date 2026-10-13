@@ -37,15 +37,17 @@ def test_full_vat_breakdown_keeps_normal_confidence():
     assert e.extraction_confidence >= 0.85
 
 
-def test_new_document_cannot_enter_an_approved_period(client_approved_period):
+def test_new_document_does_not_enter_an_approved_period(client_approved_period):
+    """מסמך מאוחר לא משנה דוח מאושר: הוא נקלט, משויך לתקופה הפתוחה הבאה ומחכה לבדיקה."""
     client, biz = client_approved_period
     H = {"X-API-Key": "k", "X-Actor": "t"}
     r = client.post(f"/api/v1/businesses/{biz}/income", headers=H,
                     json={"doc_date": "2026-03-20", "pre_vat_amount": 500})
-    assert r.status_code == 409
+    assert r.status_code == 201 and r.json()["period_date"] == "2026-05-01"
+    assert r.json()["status"] == "pending_review"
     r = client.post(f"/api/v1/businesses/{biz}/documents/text", headers=H, json={"text": (
         "ספק\nח.פ 513456780\nחשבונית מס מס' 9\n20/03/2026\nלפני מע\"מ 100.00\nמע\"מ 18% 18.00\nסה\"כ לתשלום 118.00\n")})
-    assert r.status_code == 409
+    assert r.status_code == 201 and r.json()["period_date"] == "2026-05-01"
 
 
 @pytest.fixture

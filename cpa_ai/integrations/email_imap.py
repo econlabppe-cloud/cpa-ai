@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from ..db import Business
 from ..ingest import ingest
+from ..services import audit
 from .email_parser import parse_email, recipient_token
 
 
@@ -42,7 +43,7 @@ class ImapConfig:
 
 
 def poll_once(SessionLocal, cfg: ImapConfig, imap_factory: Callable = imaplib.IMAP4_SSL) -> dict:
-    stats = {"fetched": 0, "documents": 0, "duplicates": 0, "skipped": 0, "unrouted": 0}
+    stats = {"fetched": 0, "documents": 0, "duplicates": 0, "skipped": 0, "unrouted": 0, "errors": 0}
     conn = imap_factory(cfg.host, cfg.port)
     try:
         conn.login(cfg.user, cfg.password)
@@ -52,19 +53,29 @@ def poll_once(SessionLocal, cfg: ImapConfig, imap_factory: Callable = imaplib.IM
             typ, fetched = conn.fetch(num, "(BODY.PEEK[])")
             raw = fetched[0][1]
             stats["fetched"] += 1
-            item, msg = parse_email(raw)
             with SessionLocal() as s:
-                token = recipient_token(msg)
-                biz = s.scalar(select(Business).where(Business.inbound_token == token)) if token else None
-                if biz is None and cfg.default_business:
-                    biz = s.get(Business, cfg.default_business)
-                if biz is None:
-                    stats["unrouted"] += 1
-                    continue  # לא מסומן כנקרא — יטופל אחרי שיוגדר ניתוב
-                result = ingest(s, biz, item, f"email:{(item.sender or '')[:120]}")
-                stats["documents"] += len(result.documents)
-                stats["duplicates"] += len(result.duplicates)
-                stats["skipped"] += int(result.skipped)
+                biz = None
+                try:
+                    item, msg = parse_email(raw)
+                    token = recipient_token(msg)
+                    biz = s.scalar(select(Business).where(Business.inbound_token == token)) if token else None
+                    if biz is None and cfg.default_business:
+                        biz = s.get(Business, cfg.default_business)
+                    if biz is None:
+                        stats["unrouted"] += 1
+                        continue  # לא מסומן כנקרא — יטופל אחרי שיוגדר ניתוב
+                    result = ingest(s, biz, item, f"email:{(item.sender or '')[:120]}")
+                    stats["documents"] += len(result.documents)
+                    stats["duplicates"] += len(result.duplicates)
+                    stats["skipped"] += int(result.skipped)
+                except Exception as e:  # noqa: BLE001 — הודעה אחת פגומה לא תעצור את כל התיבה
+                    # מסומנת כנקראה כדי לא ליפול עליה בכל סבב; ההודעה נשארת בתיבה ונרשמת ביומן לטיפול ידני
+                    s.rollback()
+                    stats["errors"] += 1
+                    audit(s, "imap", "inbound_failed", "business", biz.id if biz else None,
+                          imap_uid=num.decode() if isinstance(num, bytes) else str(num),
+                          error=f"{type(e).__name__}: {str(e)[:200]}")
+                    s.commit()
             conn.store(num, "+FLAGS", "\\Seen")
     finally:
         try:

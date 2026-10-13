@@ -302,3 +302,8 @@ def tax_year(year: int) -> TaxYear:
     base = TAX_YEARS[base_year]
     return TaxYear(base.brackets, base.surtax_threshold, base.surtax_rate, base.credit_point_annual,
                    Source(base.source.citation, False, f"אין טבלה לשנת {year}; משמשת טבלת {base_year}. {base.source.note}"))
+
+INPUT_VAT_WINDOW_MONTHS = Param(6, Source(
+    "תקנות מס ערך מוסף, תקנה 23 — ניכוי מס תשומות תוך שישה חודשים מיום הוצאת החשבונית",
+    verified=False,
+    note="ידוע מספרות מקצועית; לא אומת מול נוסח התקנות. קיימים מקרים חריגים (אישור מנהל) — לבדיקת המייצג"))

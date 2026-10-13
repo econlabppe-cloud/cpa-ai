@@ -26,7 +26,7 @@ def env():
     return s, biz
 
 
-def item(ref, text=None, atts=(), source="email"):
+def item(ref, text=None, atts=(), source="upload"):
     return IngestItem(source=source, source_ref=ref, text=text, attachments=list(atts))
 
 

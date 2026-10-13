@@ -42,6 +42,10 @@ class Document(Base):
     status: Mapped[str] = mapped_column(String(32))  # pending_review | confirmed | rejected
     extractor: Mapped[str] = mapped_column(String(32))
     doc_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    # תקופת הדיווח כשהיא שונה מתאריך המסמך: מסמך שהגיע אחרי שתקופתו אושרה משויך לתקופה הפתוחה הבאה
+    period_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    # מספר עוסק של הספק/הלקוח (9 ספרות) — לחיפוש היסטוריה לפי צד: ספק חדש, חריגת סכום, חשבונית חוזרת
+    party_id: Mapped[str | None] = mapped_column(String(9), nullable=True, index=True)
     extracted: Mapped[dict] = mapped_column(JSON)
     decision: Mapped[dict] = mapped_column(JSON)
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)

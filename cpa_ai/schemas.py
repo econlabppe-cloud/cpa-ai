@@ -112,6 +112,7 @@ class DocumentOut(BaseModel):
     extracted: dict
     decision: dict
     source: str = "manual"
+    period_date: Optional[date] = None
     attachment_name: Optional[str] = None
     created_at: datetime
 
