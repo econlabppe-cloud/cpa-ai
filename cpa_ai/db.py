@@ -100,6 +100,7 @@ class BankTransaction(Base):
     tx_date: Mapped[date] = mapped_column(Date, index=True)
     description: Mapped[str] = mapped_column(String(300), default="")
     amount: Mapped[float] = mapped_column(Float)  # שלילי = חיוב
+    account: Mapped[str] = mapped_column(String(16), default="bank", server_default="bank")  # bank | card
     matched_document_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="open", server_default="open")  # open|matched|ignored
     external_hash: Mapped[str] = mapped_column(String(64))

@@ -23,7 +23,7 @@ from .integrations.addresses import inbound_address
 from .rules import data
 from .security import Principal, RateLimiter, parse_users
 from .schemas import (ApprovalIn, BusinessIn, BusinessOut, DocumentOut, IncomeIn, ProcessTextIn, ReportOut,
-                      MarkPaidIn, ProfileIn, ReplyIn, ReviewIn, ThreadIn, WhatIfIn)
+                      MarkPaidIn, ProfileIn, ReplyIn, ReviewIn, ThreadIn, TxBatchIn, WhatIfIn)
 
 STATIC = Path(__file__).parent / "static"
 SAFE_SERVE_MIMES = {"application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp", "text/plain"}
@@ -557,16 +557,69 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
         if len(raw) > 5 * 1024 * 1024:
             raise HTTPException(413, "קובץ גדול מדי (מקסימום 5MB)")
         try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = raw.decode("cp1255", errors="replace")  # קידוד נפוץ בייצוא מבנקים ישראליים
-        try:
-            res = banking.import_csv(s, biz.id, text)
+            rows, kind = banking.parse_statement(raw)
         except banking.BankCsvError as e:
             raise HTTPException(422, str(e))
+        except Exception:  # noqa: BLE001 — קובץ Excel פגום
+            raise HTTPException(422, "לא ניתן לקרוא את הקובץ. נסו לשמור אותו כ-CSV או xlsx")
+        res = banking.import_rows(s, biz.id, rows, kind)
         services.audit(s, who, "bank_import", "business", biz.id, **res)
         s.commit()
         return res
+
+    def _import_tx_batch(s, biz: Business, body: TxBatchIn, who: str) -> dict:
+        from . import banking
+        res = {"rows": 0, "imported": 0, "skipped_duplicates": 0, "auto_matched": 0}
+        for account in ("bank", "card"):
+            txs = [t for t in body.transactions if t.account == account]
+            if txs:
+                r = banking.import_rows(s, biz.id, [(t.date, t.description, round(t.amount, 2)) for t in txs],
+                                        account, [t.external_id for t in txs])
+                for k in res:
+                    res[k] += r[k]
+        services.audit(s, who, "bank_import_api", "business", biz.id, **res)
+        s.commit()
+        return res
+
+    @app.post("/api/v1/businesses/{bid}/bank/transactions")
+    def bank_transactions(bid: int, body: TxBatchIn, s=Depends(session), who=Depends(actor)):
+        """תנועות מאגרגטור / בנקאות פתוחה / סקריפט של המשרד — אותו מנגנון התאמה כמו קובץ."""
+        return _import_tx_batch(s, services.get(s, Business, bid), body, who)
+
+    @app.post("/api/v1/inbound/transactions/{token}")
+    async def inbound_transactions(token: str, request: Request, s=Depends(session)):
+        """webhook לשירותי חיבור בנק/אשראי. חתום ב-HMAC-SHA256 (X-CPA-Signature: sha256=...) עם
+        CPA_AI_TX_WEBHOOK_SECRET; בלי סוד מוגדר הנקודה סגורה."""
+        import hashlib
+        import hmac
+        secret = os.getenv("CPA_AI_TX_WEBHOOK_SECRET", "")
+        if not secret:
+            raise HTTPException(503, "קליטת תנועות לא הוגדרה (CPA_AI_TX_WEBHOOK_SECRET)")
+        raw = await request.body()
+        if len(raw) > 5 * 1024 * 1024:
+            raise HTTPException(413, "גדול מדי")
+        expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(request.headers.get("x-cpa-signature", ""), expected):
+            raise HTTPException(403, "חתימה לא תקינה")
+        biz = _biz_by_token(s, token)
+        try:
+            body = TxBatchIn.model_validate_json(raw)
+        except Exception:  # noqa: BLE001
+            raise HTTPException(422, "מבנה לא תקין")
+        return _import_tx_batch(s, biz, body, "webhook:transactions")
+
+    @app.get("/api/v1/businesses/{bid}/export/journal")
+    def export_journal(bid: int, year: int = Query(ge=2015, le=2100), format: Literal["csv", "json"] = "csv",
+                       s=Depends(session), who=Depends(actor)):
+        from . import journal
+        biz = services.get(s, Business, bid)
+        rows = journal.journal_rows(s, biz.id, date(year, 1, 1), date(year, 12, 31))
+        services.audit(s, who, "export_journal", "business", biz.id, year=year, lines=len(rows))
+        s.commit()
+        if format == "json":
+            return {"year": year, "accounts": journal.ACCOUNTS, "lines": rows}
+        return Response(journal.journal_csv(rows), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="journal_{biz.id}_{year}.csv"'})
 
     @app.get("/api/v1/businesses/{bid}/bank/unmatched")
     def bank_unmatched(bid: int, s=Depends(session), who=Depends(actor)):

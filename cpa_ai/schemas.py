@@ -154,6 +154,18 @@ class ProfileIn(BaseModel):
     internal_notes: Optional[str] = Field(None, max_length=5000)
 
 
+class TxIn(BaseModel):
+    date: date
+    description: str = Field("", max_length=300)
+    amount: float = Field(description="שלילי = חיוב, חיובי = זיכוי")
+    account: Literal["bank", "card"] = "bank"
+    external_id: Optional[str] = Field(None, max_length=100, description="מזהה יציב מהמקור — מונע כפילויות")
+
+
+class TxBatchIn(BaseModel):
+    transactions: list[TxIn] = Field(max_length=5000)
+
+
 class MarkPaidIn(BaseModel):
     paid_on: Optional[date] = Field(None, description="תאריך התשלום; ריק = היום")
     unpaid: bool = Field(False, description="ביטול סימון תשלום")

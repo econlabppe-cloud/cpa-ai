@@ -1,4 +1,4 @@
-"""ייבוא תנועות בנק (CSV) והתאמה לחשבוניות.
+"""ייבוא תנועות בנק ואשראי (CSV / Excel / HTML-בתחפושת-xls / API) והתאמה לחשבוניות.
 
 המטרה: לזהות מה חסר ללקוח. תנועת חיוב בלי קבלה = הוצאה שאולי לא מתועדת; חשבונית בלי תשלום בבנק = משהו לבדוק.
 ההתאמה שמרנית: סכום זהה + חלון תאריכים + יחידות. התאמה עמומה לא נעשית אוטומטית.
@@ -11,6 +11,7 @@ import io
 import re
 from collections import Counter
 from datetime import date, datetime, timedelta
+from html.parser import HTMLParser
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,13 +22,19 @@ MIN_RECEIPT_AMOUNT = 30.0   # תנועות קטנות יותר לא מוצגות
 DAYS_BEFORE = 3              # התשלום יכול להקדים מעט את תאריך המסמך
 DAYS_AFTER = 60              # אשראי ספקים
 
+# סדר עדיפות: בדף אשראי "תאריך עסקה" קודם ל"תאריך חיוב", ו"סכום חיוב" (בש"ח) קודם ל"סכום עסקה" (במטבע המקור)
 HEADERS = {
-    "date": ("תאריך", "תאריך ערך", "תאריך פעולה", "date", "value date"),
-    "desc": ("תיאור", "תיאור הפעולה", "פרטים", "הפעולה", "description", "details"),
+    "date": ("תאריך עסקה", "תאריך רכישה", "transaction date", "תאריך", "תאריך ערך", "תאריך פעולה", "date",
+             "value date"),
+    "desc": ("שם בית העסק", "שם בית עסק", "בית עסק", "merchant", "תיאור", "תיאור הפעולה", "פרטים", "הפעולה",
+             "description", "details"),
     "debit": ("חובה", "debit", "חיוב"),
     "credit": ("זכות", "credit", "זיכוי"),
-    "amount": ("סכום", "amount", "סכום בש\"ח"),
+    "amount": ("סכום חיוב", "סכום החיוב", "סכום חיוב בש\"ח", "charge amount", "סכום", "amount", "סכום בש\"ח",
+               "סכום עסקה", "סכום העסקה"),
 }
+# כותרת שמזכירה "בית עסק" = דף כרטיס אשראי: הסכומים בו חיוביים לחיוב, ולכן מתהפכים
+CARD_MARKERS = ("בית העסק", "בית עסק", "merchant")
 
 
 class BankCsvError(ValueError):
@@ -60,18 +67,88 @@ def parse_date(raw: str) -> date | None:
 
 
 def _find(header: list[str], names: tuple[str, ...]) -> int | None:
-    low = [h.strip().lower() for h in header]
+    """התאמה מדויקת לפי סדר העדיפות, ואחריה התאמת תחילית ("סכום חיוב ₪" ← "סכום חיוב")."""
+    low = [str(h or "").strip().lower() for h in header]
     for n in names:
         if n.lower() in low:
             return low.index(n.lower())
+    for n in names:
+        for i, h in enumerate(low):
+            if h.startswith(n.lower() + " "):
+                return i
     return None
 
 
 def parse_csv(text: str) -> list[tuple[date, str, float]]:
-    text = text.lstrip("﻿")
+    return parse_rows(_csv_rows(text))[0]
+
+
+def _csv_rows(text: str) -> list[list[str]]:
+    text = text.lstrip("\ufeff")
     sample = text[:2000]
     delimiter = ";" if sample.count(";") > sample.count(",") else ("\t" if sample.count("\t") > sample.count(",") else ",")
-    rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
+    return list(csv.reader(io.StringIO(text), delimiter=delimiter))
+
+
+def _xlsx_rows(raw: bytes) -> list[list[str]]:
+    from openpyxl import load_workbook
+    wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    out = []
+    for row in wb.worksheets[0].iter_rows(values_only=True):
+        out.append([v.strftime("%d/%m/%Y") if isinstance(v, (datetime, date)) else ("" if v is None else str(v))
+                    for v in row])
+    return out
+
+
+class _TableParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rows, self._row, self._cell = [], None, None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th") and self._row is not None:
+            self._cell = []
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._row is not None and self._cell is not None:
+            self._row.append(" ".join("".join(self._cell).split()))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _decode(raw: bytes) -> str:
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1255", errors="replace")  # קידוד נפוץ בייצוא מבנקים ישראליים
+
+
+def parse_statement(raw: bytes) -> tuple[list[tuple[date, str, float]], str]:
+    """דף בנק או אשראי בכל פורמט נפוץ. מחזיר (תנועות, "bank"/"card")."""
+    if raw[:4] == b"PK\x03\x04":
+        rows = _xlsx_rows(raw)
+    elif raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        raise BankCsvError("קובץ Excel בפורמט ישן (xls) — פתחו אותו ושמרו כ-xlsx או CSV")
+    else:
+        text = _decode(raw)
+        if text.lstrip()[:1] == "<":  # חברות אשראי מייצאות לעיתים טבלת HTML בסיומת xls
+            p = _TableParser()
+            p.feed(text)
+            rows = p.rows
+        else:
+            rows = _csv_rows(text)
+    return parse_rows(rows)
+
+
+def parse_rows(rows: list[list[str]]) -> tuple[list[tuple[date, str, float]], str]:
     # שורת הכותרת: הראשונה שמכילה עמודת תאריך
     for i, row in enumerate(rows):
         if _find(row, HEADERS["date"]) is not None:
@@ -83,6 +160,7 @@ def parse_csv(text: str) -> list[tuple[date, str, float]]:
     i_debit, i_credit, i_amt = (_find(header, HEADERS[k]) for k in ("debit", "credit", "amount"))
     if i_amt is None and i_debit is None and i_credit is None:
         raise BankCsvError("לא נמצאה עמודת סכום (סכום / חובה / זכות)")
+    kind = "card" if any(m in str(h) for h in header for m in CARD_MARKERS) else "bank"
 
     out = []
     for row in body:
@@ -99,29 +177,43 @@ def parse_csv(text: str) -> list[tuple[date, str, float]]:
             amount = (credit or 0.0) - abs(debit or 0.0) if (debit is not None or credit is not None) else None
         if not amount:
             continue
+        if kind == "card":
+            amount = -amount
         desc = row[i_desc].strip() if i_desc is not None and i_desc < len(row) else ""
         out.append((d, desc, round(amount, 2)))
-    return out
+    return out, kind
 
 
 def import_csv(s: Session, business_id: int, text: str) -> dict:
-    parsed = parse_csv(text)
+    rows, kind = parse_rows(_csv_rows(text))
+    return import_rows(s, business_id, rows, kind)
+
+
+def import_rows(s: Session, business_id: int, parsed: list[tuple], account: str = "bank",
+                external_ids: list[str | None] | None = None) -> dict:
+    """external_ids (מ-API): מזהה יציב מהמקור לדה-דופליקציה. בלעדיו — לפי תאריך, תיאור, סכום ומספר מופע."""
     seen: Counter = Counter()
     added = skipped = 0
-    for d, desc, amount in parsed:
-        key = f"{d.isoformat()}|{desc}|{amount:.2f}"
-        seen[key] += 1  # תנועות זהות באותו קובץ (שתי קפה באותו יום) נשארות נפרדות
-        h = hashlib.sha256(f"{key}|{seen[key]}".encode()).hexdigest()
+    for i, (d, desc, amount) in enumerate(parsed):
+        ext = external_ids[i] if external_ids else None
+        if ext:
+            h = hashlib.sha256(f"ext|{account}|{ext}".encode()).hexdigest()
+        else:
+            key = f"{d.isoformat()}|{desc}|{amount:.2f}"
+            seen[key] += 1  # תנועות זהות באותו קובץ (שתי קפה באותו יום) נשארות נפרדות
+            h = hashlib.sha256(f"{key}|{seen[key]}".encode()).hexdigest()
         if s.scalar(select(BankTransaction.id).where(BankTransaction.business_id == business_id,
                                                      BankTransaction.external_hash == h)):
             skipped += 1
             continue
-        s.add(BankTransaction(business_id=business_id, tx_date=d, description=desc[:300], amount=amount, external_hash=h))
+        s.add(BankTransaction(business_id=business_id, tx_date=d, description=desc[:300], amount=amount,
+                              account=account, external_hash=h))
         added += 1
     s.flush()
     matched = auto_match(s, business_id)
     s.commit()
-    return {"rows": len(parsed), "imported": added, "skipped_duplicates": skipped, "auto_matched": matched}
+    return {"rows": len(parsed), "imported": added, "skipped_duplicates": skipped, "auto_matched": matched,
+            "account": account}
 
 
 def _tokens(text: str) -> set[str]:
@@ -185,7 +277,8 @@ def unmatched(s: Session, business_id: int) -> dict:
                                    "date": d.doc_date.isoformat(), "total": d.decision.get("total_amount")})
     return {
         "transactions_without_document": [
-            {"id": t.id, "date": t.tx_date.isoformat(), "description": t.description, "amount": t.amount}
+            {"id": t.id, "date": t.tx_date.isoformat(), "description": t.description, "amount": t.amount,
+             "account": t.account or "bank"}
             for t in open_debits],
         "documents_without_payment": no_payment,
     }
