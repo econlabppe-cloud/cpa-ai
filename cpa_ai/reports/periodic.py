@@ -14,7 +14,7 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..db import Business, Document
+from ..db import Business, Document, Report
 from ..rules import data
 
 
@@ -214,6 +214,19 @@ def build_annual_estimate(s: Session, biz: Business, year: int, credit_points: f
     if pending:
         warnings.append(f"{len(pending)} מסמכים ממתינים לבדיקה ולא נכללו")
 
+    # מס ששולם מראש: ניכוי במקור שנוכה על ידי לקוחות + מקדמות בדוחות מאושרים (שכבר קיזזו את הניכוי של תקופתם)
+    withholding = sum((d.extracted.get("withholding_tax") or 0.0) for d in confirmed if d.direction == "income")
+    advance_reports = list(s.scalars(select(Report).where(
+        Report.business_id == biz.id, Report.kind == "income_tax_advance", Report.status == "approved",
+        Report.period_start >= start, Report.period_start <= end)))
+    advances = sum(r.payload.get("advance_payable", 0.0) for r in advance_reports)
+    prepaid = r2(withholding + advances)
+    balance = r2(burden["income_tax"] - prepaid)
+    warnings.append("מקדמות נלקחו רק מדוחות מקדמה שאושרו במערכת; מקדמות ששולמו מחוץ למערכת או קנסות/ריבית לא נכללו")
+    if balance < 0:
+        warnings.append(f"לפי ההערכה שולם מראש יותר מהמס — צפוי החזר של כ-{-balance:,.0f} ₪ אחרי הגשת הדוח השנתי. "
+                        "אפשר לשקול בקשה להפחתת שיעור המקדמות")
+
     return {
         "kind": "annual_estimate",
         "business": {"name": biz.name, "vat_id": biz.vat_id, "owner": biz.owner_name},
@@ -233,6 +246,9 @@ def build_annual_estimate(s: Session, biz: Business, year: int, credit_points: f
         "effective_rate": burden["effective_rate"],
         "tax_breakdown": burden["tax_breakdown"],
         "tax_table_source": {"verified": burden["tax_table_verified"], "note": burden["tax_table_note"]},
+        "prepaid": {"withholding": r2(withholding), "advances": r2(advances), "total": prepaid,
+                    "advance_report_ids": [r.id for r in advance_reports]},
+        "income_tax_balance": balance,
         "included_document_ids": [d.id for d in confirmed],
         "pending_document_ids": pending,
         "warnings": warnings,

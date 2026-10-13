@@ -113,6 +113,7 @@ class DocumentOut(BaseModel):
     decision: dict
     source: str = "manual"
     period_date: Optional[date] = None
+    paid_on: Optional[date] = None
     attachment_name: Optional[str] = None
     created_at: datetime
 
@@ -133,6 +134,11 @@ class ReportOut(BaseModel):
     submitted_at: Optional[datetime] = None
     submission_ref: Optional[str] = None
     created_at: datetime
+
+
+class MarkPaidIn(BaseModel):
+    paid_on: Optional[date] = Field(None, description="תאריך התשלום; ריק = היום")
+    unpaid: bool = Field(False, description="ביטול סימון תשלום")
 
 
 class WhatIfIn(BaseModel):

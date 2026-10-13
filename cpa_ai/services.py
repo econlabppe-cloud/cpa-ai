@@ -335,6 +335,17 @@ def review_document(s: Session, doc_id: int, rv: ReviewIn, actor: str) -> Docume
     return doc
 
 
+def mark_paid(s: Session, doc_id: int, paid_on: date | None, unpaid: bool, actor: str) -> Document:
+    """סימון תשלום שלא עבר בבנק (מזומן/צ'ק). לא משנה את רשומת המס ולכן מותר גם בתקופה נעולה."""
+    doc = get(s, Document, doc_id)
+    if doc.status != "confirmed":
+        raise Conflict("אפשר לסמן תשלום רק למסמך מאושר")
+    doc.paid_on = None if unpaid else (paid_on or date.today())
+    audit(s, actor, "mark_paid", "document", doc.id, paid_on=doc.paid_on.isoformat() if doc.paid_on else None)
+    s.commit()
+    return doc
+
+
 # --- דוחות -----------------------------------------------------------------
 def _build(s: Session, biz: Business, kind: str, start: date, end: date, inputs: dict) -> dict:
     if kind == "vat_period":

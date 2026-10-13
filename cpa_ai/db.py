@@ -46,6 +46,8 @@ class Document(Base):
     period_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     # מספר עוסק של הספק/הלקוח (9 ספרות) — לחיפוש היסטוריה לפי צד: ספק חדש, חריגת סכום, חשבונית חוזרת
     party_id: Mapped[str | None] = mapped_column(String(9), nullable=True, index=True)
+    # תשלום שהתקבל/שולם שלא דרך התאמת בנק (מזומן, צ'ק) — לגיול לקוחות
+    paid_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     extracted: Mapped[dict] = mapped_column(JSON)
     decision: Mapped[dict] = mapped_column(JSON)
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)

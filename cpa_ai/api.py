@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+from datetime import date
 from urllib.parse import unquote
 from pathlib import Path
 from typing import Literal, Optional
@@ -21,7 +22,7 @@ from .integrations.addresses import inbound_address
 from .rules import data
 from .security import Principal, RateLimiter, parse_users
 from .schemas import (ApprovalIn, BusinessIn, BusinessOut, DocumentOut, IncomeIn, ProcessTextIn, ReportOut,
-                      ReviewIn, WhatIfIn)
+                      MarkPaidIn, ReviewIn, WhatIfIn)
 
 STATIC = Path(__file__).parent / "static"
 SAFE_SERVE_MIMES = {"application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp", "text/plain"}
@@ -353,6 +354,20 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
     @app.get("/api/v1/documents/{did}", response_model=DocumentOut)
     def get_doc(did: int, s=Depends(session), who=Depends(actor)):
         return doc_out(services.get(s, Document, did))
+
+    @app.post("/api/v1/documents/{did}/mark-paid", response_model=DocumentOut)
+    def mark_paid(did: int, body: MarkPaidIn, s=Depends(session), who=Depends(actor)):
+        return doc_out(services.mark_paid(s, did, body.paid_on, body.unpaid, who))
+
+    @app.get("/api/v1/businesses/{bid}/receivables")
+    def receivables(bid: int, today: Optional[date] = Query(None), s=Depends(session), who=Depends(actor)):
+        from . import insights
+        return insights.receivables(s, services.get(s, Business, bid), today)
+
+    @app.get("/api/v1/businesses/{bid}/pnl")
+    def pnl(bid: int, year: int = Query(ge=2015, le=2100), s=Depends(session), who=Depends(actor)):
+        from . import insights
+        return insights.monthly_pnl(s, services.get(s, Business, bid), year)
 
     @app.post("/api/v1/documents/{did}/review", response_model=DocumentOut)
     def review(did: int, body: ReviewIn, s=Depends(session), who=Depends(actor)):

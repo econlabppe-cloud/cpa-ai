@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import banking
+from . import banking, insights
 from .db import Business, Document, Report
 from .integrations.addresses import inbound_address
 from .reports.periodic import vat_period_bounds
@@ -132,6 +132,18 @@ def build_home(s: Session, biz: Business, today: date | None = None) -> dict:
                                 else f"{len(open_tx)} חיובים בבנק בלי קבלה (₪{total:,.0f})"),
                       "detail": "לשלוח את הקבלות, או לסמן שזו הוצאה פרטית",
                       "cta": {"label": "לבנק", "view": "bank"}})
+    for miss in insights.missing_recurring(s, biz, today)[:3]:
+        typical = f" (בדרך כלל ₪{miss['typical_total']:,.0f})" if miss["typical_total"] else ""
+        tasks.append({"id": "missing_recurring", "priority": 3,
+                      "title": f"לא הגיעה חשבונית מ{miss['vendor']} לחודש {miss['month'][5:]}/{miss['month'][:4]}",
+                      "detail": "הספק שולח חשבונית כל חודש" + typical + ". הוצאה שלא נקלטה = מס ומע\"מ שמשלמים ביותר",
+                      "cta": {"label": "להעלאה", "view": "home", "anchor": "drop"}})
+    ar = insights.receivables(s, biz, today)
+    overdue = round(ar["buckets"]["61-90"] + ar["buckets"]["90+"], 2)
+    if overdue > 0 and ar["bank_imported"]:
+        tasks.append({"id": "receivables", "priority": 3, "title": f"₪{overdue:,.0f} אצל לקוחות מעל 60 יום",
+                      "detail": "חשבוניות שלא נמצא להן תשלום בבנק — לשלוח תזכורת או לסמן ששולמו",
+                      "cta": {"label": "לגבייה", "view": "more", "anchor": "m-ar"}})
     if not docs:
         tasks.append({"id": "first_doc", "priority": 4, "title": "העלו את החשבונית הראשונה",
                       "detail": "גררו קובץ, העבירו במייל או שלחו בווטסאפ", "cta": {"label": "להעלאה", "view": "home", "anchor": "drop"}})
@@ -146,7 +158,8 @@ def build_home(s: Session, biz: Business, today: date | None = None) -> dict:
         tasks.append({"id": "advance_rate", "priority": 4, "title": "הגדירו שיעור מקדמות",
                       "detail": "בלי זה דוח המקדמות יהיה 0 ₪", "cta": {"label": "להגדרות", "view": "home", "anchor": "channels"}})
     days_to_year_end = (date(today.year, 12, 31) - today).days
-    year_income = sum(d.decision.get("pre_vat_amount") or 0.0 for d in docs
+    year_income = sum((-1 if d.extracted.get("doc_type") == "credit_invoice" else 1)
+                      * (d.decision.get("pre_vat_amount") or 0.0) for d in docs
                       if d.direction == "income" and d.status == "confirmed" and d.doc_date and d.doc_date.year == today.year)
     if days_to_year_end <= 60 and year_income > 0:
         tasks.append({"id": "year_end", "priority": 3,
