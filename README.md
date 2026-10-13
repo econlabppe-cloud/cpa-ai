@@ -24,6 +24,29 @@ pytest                      # 286 בדיקות
 | `OPENAI_API_KEY`, `CPA_AI_OPENAI_MODEL` | אופציונלי: חילוץ עם LLM (גם מתמונות). דורש `pip install openai` **והסכמת העסק** |
 | `CPA_AI_HOST`, `CPA_AI_PORT` | כתובת השרת |
 
+## העלאה ל-Vercel
+
+Vercel מריץ את המערכת כפונקציה חסרת מצב, ולכן נדרשים שני שינויים מההרצה המקומית. שניהם כבר מוגדרים בקוד: `api/index.py` ו-`vercel.json`.
+1. **בסיס נתונים חיצוני.** מסד SQLite לא נשמר ב-Vercel. צריך PostgreSQL (למשל Neon או Supabase בחינם) ו-`CPA_AI_DATABASE_URL=postgresql+psycopg://...`.
+2. **קבצי המקור נשמרים במסד** (`CPA_AI_STORAGE=db`, ברירת מחדל ב-`api/index.py`) ומוצפנים אם הוגדר `CPA_AI_ENCRYPTION_KEY`.
+
+**צעדים:**
+1. ליצור מסד PostgreSQL ולהעתיק את כתובת החיבור.
+2. ב-vercel.com: Add New → Project → לבחור את הריפו, ו-**Root Directory = `cpa-ai`**.
+3. Environment Variables:
+   - `CPA_AI_DATABASE_URL` — כתובת ה-Postgres, בצורה `postgresql+psycopg://...`.
+   - `CPA_AI_USERS` — למשל `{"מפתח-ארוך-אקראי":"מנהל"}`.
+   - `CPA_AI_ENCRYPTION_KEY` — פלט של `python -m cpa_ai gen-key`. **לשמור במקום בטוח: בלעדיו קבצים מוצפנים לא ייפתחו.**
+4. Deploy. הכתובת `https://<project>.vercel.app` תציג את הממשק. בהגדרות ⚙️ בממשק מזינים את המפתח.
+
+**מה לא עובד ב-Vercel:**
+- **OCR מקומי** (אין Tesseract). קריאת צילומים דורשת `ANTHROPIC_API_KEY` והסכמת העסק.
+- **משיכת IMAP ברקע** (אין תהליך רץ). מייל נקלט דרך webhook: Mailgun/Postmark אל `/api/v1/inbound/email`.
+- **הגבלת קצב בזיכרון** אינה משותפת בין מופעים.
+- **גיבוי מהשרת:** לגבות את ה-Postgres ישירות (`pg_dump` או הגיבוי של הספק).
+
+להרצה על שרת רגיל או Docker יש גם `Dockerfile` ו-`docker-compose.yml` (כולל OCR), ו-`./start-local.sh` להרצה מקומית.
+
 ## חיבורים: איך חשבוניות מגיעות לבד
 
 הרעיון: הלקוח לא מעלה כלום. חשבוניות ממייל וקבלות מוואטסאפ נקלטות, עוברות את אותם כללים, ורק מה שדורש עין אנושית מגיע אליו.

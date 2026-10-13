@@ -17,6 +17,19 @@ class StorageError(RuntimeError):
     pass
 
 
+_sessionmaker = None
+
+
+def configure(sessionmaker) -> None:
+    """נקרא ביצירת האפליקציה: מצב db משתמש באותו מסד כמו שאר הנתונים."""
+    global _sessionmaker
+    _sessionmaker = sessionmaker
+
+
+def _db_mode() -> bool:
+    return os.getenv("CPA_AI_STORAGE", "disk") == "db"
+
+
 def data_dir() -> Path:
     return Path(os.getenv("CPA_AI_DATA_DIR", "./cpa_ai_data")).resolve()
 
@@ -46,8 +59,15 @@ def save(data: bytes, filename: str) -> tuple[str, str]:
     if not ext.replace(".", "").isalnum():
         ext = ""
     rel = f"attachments/{digest[:2]}/{digest}{ext}"
-    target = data_dir() / rel
     f = fernet()  # נבדק גם כשהקובץ קיים, כדי ששגיאת מפתח לא תיבלע
+    if _db_mode():
+        from .db import StoredFile
+        with _sessionmaker() as s:
+            if s.get(StoredFile, rel) is None:
+                s.add(StoredFile(path=rel, data=MAGIC + f.encrypt(data) if f else data))
+                s.commit()
+        return rel, digest
+    target = data_dir() / rel
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(MAGIC + f.encrypt(data) if f else data)
@@ -55,11 +75,19 @@ def save(data: bytes, filename: str) -> tuple[str, str]:
 
 
 def read(rel: str) -> bytes:
-    root = data_dir()
-    target = (root / rel).resolve()
-    if root not in target.parents:  # הגנה מפני path traversal
-        raise ValueError("נתיב קובץ לא חוקי")
-    blob = target.read_bytes()
+    if _db_mode():
+        from .db import StoredFile
+        with _sessionmaker() as s:
+            row = s.get(StoredFile, rel)
+            if row is None:
+                raise StorageError("הקובץ לא נמצא")
+            blob = bytes(row.data)
+    else:
+        root = data_dir()
+        target = (root / rel).resolve()
+        if root not in target.parents:  # הגנה מפני path traversal
+            raise ValueError("נתיב קובץ לא חוקי")
+        blob = target.read_bytes()
     if not blob.startswith(MAGIC):
         return blob  # קובץ שנשמר לפני שהופעלה הצפנה
     f = fernet()

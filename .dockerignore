@@ -1,0 +1,8 @@
+.venv
+tests
+docs
+samples
+__pycache__
+*.db
+cpa_ai_data
+.env

@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 .env
 cpa_ai_data/
+.env.local

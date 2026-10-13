@@ -146,6 +146,8 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
 
     app = FastAPI(title="CPA-AI — הכנת דוחות לעוסק מורשה", version="1.0.0", dependencies=[Depends(scope)])
     app.state.SessionLocal = SessionLocal  # לשימוש עובדי רקע ובדיקות
+    from . import storage as _storage
+    _storage.configure(SessionLocal)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):

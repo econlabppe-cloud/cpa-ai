@@ -4,7 +4,7 @@ import os
 import secrets
 from datetime import date, datetime, timezone
 
-from sqlalchemy import (JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text,
+from sqlalchemy import (JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text,
                         UniqueConstraint, create_engine)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -124,6 +124,14 @@ class Report(Base):
     # המערכת אינה מגישה לרשות המסים; כאן נרשם שהמייצג הגיש בפועל, עם מספר האישור שקיבל
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     submission_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class StoredFile(Base):
+    """קבצי מקור בבסיס הנתונים (CPA_AI_STORAGE=db) — לאירוח בלי דיסק קבוע, כמו Vercel."""
+    __tablename__ = "stored_files"
+    path: Mapped[str] = mapped_column(String(200), primary_key=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

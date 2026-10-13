@@ -1,0 +1,11 @@
+# הרצה: cp .env.example .env  # למלא מפתחות
+#        docker compose up -d --build   → http://localhost:8000
+services:
+  cpa-ai:
+    build: .
+    restart: unless-stopped
+    ports: ["127.0.0.1:8000:8000"]   # חשיפה לאינטרנט רק דרך פרוקסי HTTPS (ראו README)
+    env_file: .env
+    volumes: ["cpa_data:/data"]
+volumes:
+  cpa_data:

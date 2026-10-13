@@ -202,3 +202,32 @@ def test_wrong_key_gives_503_on_download_and_does_not_break_the_accountant_packa
     assert pkg.status_code == 200
     with zipfile.ZipFile(__import__("io").BytesIO(pkg.content)) as z:
         assert f"קבצי מקור חסרים עבור מסמכים: [{did}]" in z.read("README.txt").decode("utf-8")
+
+
+def test_db_storage_mode_keeps_files_in_the_database(monkeypatch, tmp_path):
+    """לאירוח בלי דיסק קבוע (Vercel): קבצי המקור נשמרים במסד, מוצפנים אם הוגדר מפתח, וניתנים להורדה."""
+    import io
+    import zipfile
+
+    from fastapi.testclient import TestClient
+
+    from cpa_ai.api import create_app
+    from cpa_ai.db import StoredFile
+
+    from .helpers import make_pdf
+    monkeypatch.setenv("CPA_AI_STORAGE", "db")
+    monkeypatch.setenv("CPA_AI_DATA_DIR", str(tmp_path / "must-stay-empty"))
+    monkeypatch.setenv("CPA_AI_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    c = TestClient(create_app("sqlite://", api_key="k"))
+    H = {"X-API-Key": "k"}
+    c.post("/api/v1/businesses", headers=H, json={"name": "ע", "vat_id": "037544129", "owner_name": "x"})
+    pdf = make_pdf()
+    r = c.post("/api/v1/businesses/1/documents/upload", headers=H, files={"files": ("i.pdf", pdf, "application/pdf")})
+    doc_id = r.json()["documents"][0]
+    assert c.get(f"/api/v1/documents/{doc_id}/file", headers=H).content == pdf
+    with c.app.state.SessionLocal() as s:
+        row = s.query(StoredFile).one()
+        assert bytes(row.data).startswith(b"CPAENC1\n") and pdf not in bytes(row.data)
+    assert not (tmp_path / "must-stay-empty").exists()
+    z = c.get("/api/v1/businesses/1/accountant-package", headers=H, params={"year": 2026, "month": 7})
+    assert any(n.startswith("originals/") for n in zipfile.ZipFile(io.BytesIO(z.content)).namelist())
