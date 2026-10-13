@@ -49,6 +49,13 @@ button:disabled{opacity:.5;cursor:default}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .chip{background:var(--card);border:1px solid var(--line);color:var(--ink);min-height:38px;padding:4px 14px;border-radius:99px}
 .chip[aria-pressed=true]{background:var(--pri);color:var(--pri-ink);border-color:var(--pri)}
+.msgs{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.bubble{max-width:85%;padding:9px 12px;border-radius:14px;background:var(--bg);border:1px solid var(--line);white-space:pre-wrap;word-break:break-word}
+.bubble.me{align-self:flex-start;background:var(--info-bg)}
+.bubble.other{align-self:flex-end}
+.bubble.system{align-self:center;background:transparent;border:0;color:var(--mut);font-size:.9em}
+.bubble small{display:block;color:var(--mut);margin-top:4px;font-size:.8em}
+table.opt{width:100%;border-collapse:collapse}table.opt td,table.opt th{text-align:start;padding:6px 4px;border-bottom:1px solid var(--line)}
 .doc{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}
 .d-top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.d-top b{font-size:16px}.amt{font-weight:800;font-size:18px;white-space:nowrap}
 .d-meta{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 8px;font-size:13px;color:var(--mut)}
@@ -94,6 +101,7 @@ dialog::backdrop{background:rgba(8,12,22,.55)}
   <section id="v-docs" class="hide"></section>
   <section id="v-bank" class="hide"></section>
   <section id="v-reports" class="hide"></section>
+  <section id="v-threads" class="hide"></section>
   <section id="v-more" class="hide"></section>
 </main>
 
@@ -151,12 +159,15 @@ function openForm(title,fields,onSubmit,okLabel="שמירה"){
 }
 
 /* ───────── ניווט ───────── */
-const NAV=[["home","🏠","בית"],["docs","🧾","מסמכים"],["bank","🏦","בנק"],["reports","📑","דוחות"],["more","⋯","עוד"]];
-function drawNav(){$("nav").innerHTML=NAV.map(([k,ic,l])=>{const dot=k==="docs"&&S.home&&S.home.counts.pending?`<span class="dot" aria-label="${S.home.counts.pending} ממתינים">${S.home.counts.pending}</span>`:"";
+const NAV=[["home","🏠","בית"],["docs","🧾","מסמכים"],["threads","💬","פניות"],["bank","🏦","בנק"],["reports","📑","דוחות"],["more","⋯","עוד"]];
+const mySide=()=>S.me.role==="client"?"client":"accountant";
+function drawNav(){$("nav").innerHTML=NAV.map(([k,ic,l])=>{const th=S.home&&S.home.threads?S.home.threads["waiting_on_"+mySide()]:0;
+    const n=k==="docs"&&S.home?S.home.counts.pending:k==="threads"?th:0;
+    const dot=n?`<span class="dot" aria-label="${n} ממתינים">${n}</span>`:"";
   return `<button data-v="${k}" ${S.view===k?'aria-current="page"':""}><span class="ic" aria-hidden="true">${ic}</span>${l}${dot}</button>`}).join("");
   $("nav").querySelectorAll("button").forEach(b=>b.onclick=()=>go(b.dataset.v))}
 function go(view,anchor){S.view=view;if(anchor==="m-advisor")S.openAdvisor=true;for(const [k] of NAV)$("v-"+k).classList.toggle("hide",k!==view);drawNav();render(view).then(()=>{if(anchor){const el=$(anchor);if(el){if(el.tagName==="DETAILS")el.open=true;el.scrollIntoView({behavior:"smooth",block:"center"})}}else window.scrollTo(0,0)})}
-async function render(view){try{await({home:renderHome,docs:renderDocs,bank:renderBank,reports:renderReports,more:renderMore})[view]()}catch(e){$("v-"+view).innerHTML=`<div class="card"><b>משהו השתבש</b><p class="muted">${esc(e.message)}</p></div>`}}
+async function render(view){try{await({home:renderHome,docs:renderDocs,threads:renderThreads,bank:renderBank,reports:renderReports,more:renderMore})[view]()}catch(e){$("v-"+view).innerHTML=`<div class="card"><b>משהו השתבש</b><p class="muted">${esc(e.message)}</p></div>`}}
 
 /* ───────── עסקים ───────── */
 async function loadBiz(){
@@ -251,9 +262,10 @@ function docCard(d){const e=d.extracted,x=d.decision,[ic,srcName]=SRC[d.source]|
   const act=d.status==="pending_review"?`<button class="act sm" data-rv="${d.id}" data-a="confirm">✓ אישור</button><button class="sec sm" data-edit="${d.id}">✎ תיקון</button><button class="ghost sm" data-rv="${d.id}" data-a="reject">דחייה</button>`:"";
   const ask=(x.findings||[]).some(f=>f.code==="ALLOCATION_MISSING")?`<button class="sec sm" data-ask="${d.id}">✉️ בקשה מהספק</button>`:"";
   const orig=d.attachment_name?`<button class="ghost sm" data-file="${d.id}">📎 המקור</button>`:"";
+  const q=`<button class="ghost sm" data-q="${d.id}" data-who="${esc(who)}">💬 שאלה</button>`;
   return `<article class="doc"><div class="d-top"><b>${esc(who)}</b><span class="amt">${money2(x.total_amount)}</span></div>
    <div class="d-meta"><span class="pill ${cls}">${stName}</span><span title="${esc(srcName)}">${ic} ${esc(srcName)}</span><span>${dstr(e.doc_date)}</span>${x.category_label&&x.category!=="unknown"?`<span>· ${esc(x.category_label)}</span>`:""}${d.direction==="income"?'<span class="pill">הכנסה</span>':""}${x.payment_method==="cash"?'<span class="pill warn">💵 מזומן</span>':""}${e.doc_type==="credit_invoice"?'<span class="pill">↩️ זיכוי</span>':""}${d.period_date?`<span class="pill warn" title="הגיע אחרי שהתקופה אושרה">⏰ מדווח ב-${dstr(d.period_date)}</span>`:""}${d.paid_on?`<span class="pill ok">שולם ${dstr(d.paid_on)}</span>`:""}${x.is_foreign_vendor?`<span class="pill">🌍 ספק זר${x.currency&&x.currency!=="ILS"?" · "+esc(x.currency):""}</span>`:""}</div>
-   ${findingsHtml(d)}<div class="d-act">${act}${ask}${orig}</div></article>`}
+   ${findingsHtml(d)}<div class="d-act">${act}${ask}${orig}${q}</div></article>`}
 async function renderDocs(){
   const el=$("v-docs");if(!S.biz){el.innerHTML='<div class="card">קודם יוצרים עסק</div>';return}
   el.innerHTML=skeleton(4);
@@ -268,6 +280,7 @@ async function renderDocs(){
   el.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>editDoc(+b.dataset.edit));
   el.querySelectorAll("[data-file]").forEach(b=>b.onclick=()=>openOriginal(+b.dataset.file));
   el.querySelectorAll("[data-ask]").forEach(b=>b.onclick=()=>askVendor(+b.dataset.ask));
+  el.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>newThread({kind:"question",document_id:+b.dataset.q,title:`שאלה על ${b.dataset.who}`}));
 }
 async function askVendor(id){const d=await api(`/api/v1/documents/${id}`);const e=d.extracted,x=d.decision;
   const msg=`שלום, בחשבונית${e.doc_number?` מס' ${e.doc_number}`:""}${e.doc_date?` מתאריך ${dstr(e.doc_date)}`:""} על סך ${money2(x.pre_vat_amount)} לפני מע"מ חסר מספר הקצאה ממערכת "חשבוניות ישראל". בלי המספר אין לי אפשרות לנכות את המע"מ. אשמח לקבל חשבונית מעודכנת עם מספר הקצאה. תודה!`;
@@ -307,19 +320,65 @@ async function editDoc(id){const who=needActor();if(!who)return;const d=await ap
   ],async v=>{const c={...e,vendor_id:v.vendor_id||null,vendor_name:v.vendor_name||null,doc_date:v.doc_date||null,allocation_number:v.allocation_number||null,currency:v.currency,payment_method:v.payment_method,is_foreign_vendor:v.is_foreign_vendor,pre_vat_amount:v.pre_vat_amount,vat_amount:v.vat_amount,total_amount:v.total_amount};
     await api(`/api/v1/documents/${id}/review`,{method:"POST",json:{action:"confirm",reviewer:who,corrections:c,category_override:v.category_override||null}});toast("תוקן ואושר ✓",true);renderDocs()},"שמירה ואישור")}
 
+/* ───────── פניות: עבודה משותפת רו"ח–לקוח ───────── */
+function threadRow(t,showBiz){const me=t.waiting_on===mySide();const st=t.status==="closed"?'<span class="pill ok">סגור</span>':me?'<span class="pill warn">מחכה לך</span>':`<span class="pill">מחכה ל${t.waiting_on==="client"?"לקוח":'רו"ח'}</span>`;
+  return `<button class="ov-row" data-th="${t.id}" data-tb="${t.business_id}" style="text-align:start"><span class="ov-name"><b>${esc(t.title)}</b><br><small class="muted">${showBiz&&t.business_name?esc(t.business_name)+" · ":""}${esc(t.kind_label)} · ${esc(t.last_message)}</small></span>${t.overdue?'<span class="pill err">באיחור</span>':""}${st}</button>`}
+async function renderThreads(){
+  const el=$("v-threads");if(!S.biz){el.innerHTML='<div class="card">קודם יוצרים עסק</div>';return}
+  el.innerHTML=skeleton(3);
+  const [list,inbox]=await Promise.all([api(`/api/v1/businesses/${bid()}/threads`),S.list.length>1?api("/api/v1/inbox"):Promise.resolve(null)]);
+  const open=list.filter(t=>t.status==="open"),closed=list.filter(t=>t.status==="closed");
+  const other=inbox?inbox.threads.filter(t=>t.business_id!==bid()):[];
+  el.innerHTML=`<div class="row" style="align-items:center"><h2 style="margin:0">פניות</h2><button class="act sm" id="th-new">+ פנייה חדשה</button></div>
+   <p class="muted">שאלות, בקשות למסמכים ומשימות בין ${S.me.role==="client"?"לבין רואה החשבון":"המשרד ללקוח"} — במקום אחד, עם תיעוד מלא.</p>
+   ${other.length?`<div class="card"><h3>מחכות לך אצל לקוחות אחרים (${other.length})</h3><div class="ov-list">${other.map(t=>threadRow(t,true)).join("")}</div></div>`:""}
+   <div class="card"><h3>פתוחות (${open.length})</h3>${open.length?`<div class="ov-list">${open.map(t=>threadRow(t)).join("")}</div>`:'<p class="muted">אין פניות פתוחות 🎉</p>'}</div>
+   <div id="th-view"></div>
+   ${closed.length?`<details class="card"><summary>סגורות (${closed.length})</summary><div class="ov-list">${closed.map(t=>threadRow(t)).join("")}</div></details>`:""}`;
+  $("th-new").onclick=()=>newThread({});
+  el.querySelectorAll("[data-th]").forEach(b=>b.onclick=async()=>{if(+b.dataset.tb!==bid()){store("cpa_biz",b.dataset.tb);await loadBiz();S.openThread=+b.dataset.th;return go("threads")}openThread(+b.dataset.th)});
+  if(S.openThread){const id=S.openThread;S.openThread=null;openThread(id)}
+}
+async function openThread(id){const t=await api(`/api/v1/threads/${id}`),v=$("th-view");
+  const msgs=t.messages.map(m=>`<div class="bubble ${m.role==="system"?"system":m.role===mySide()?"me":"other"}">${esc(m.body)}${m.document_id?` <button class="ghost sm" data-doc="${m.document_id}">📄 מסמך #${m.document_id}</button>`:""}<small>${esc(m.author)} · ${new Date(m.created_at).toLocaleString("he-IL")}</small></div>`).join("");
+  v.innerHTML=`<div class="card" id="th-card"><div class="row" style="align-items:center"><h3 style="margin:0">${esc(t.title)}</h3><span class="pill">${esc(t.kind_label)}</span>${t.due_date?`<span class="pill ${t.overdue?"err":""}">עד ${dstr(t.due_date)}</span>`:""}</div>
+   ${t.document_id?`<p class="muted">בנוגע למסמך <button class="ghost sm" data-doc="${t.document_id}">#${t.document_id}</button></p>`:""}
+   <div class="msgs">${msgs}</div>
+   <label>תשובה<textarea id="th-body" placeholder="כתבו כאן…"></textarea></label>
+   <div class="d-act"><button class="act" id="th-send">שליחה</button><label class="sec sm" style="cursor:pointer;display:inline-flex;align-items:center;padding:8px 12px;border-radius:10px;border:1px solid var(--line)">📎 צירוף קובץ<input type="file" id="th-file" multiple class="hide"></label>
+   <button class="ghost sm" id="th-st">${t.status==="open"?"סגירת הפנייה":"פתיחה מחדש"}</button></div></div>`;
+  v.scrollIntoView({behavior:"smooth",block:"start"});
+  v.querySelectorAll("[data-doc]").forEach(b=>b.onclick=()=>openDocFile(+b.dataset.doc));
+  $("th-send").onclick=async()=>{const body=$("th-body").value.trim();if(!body)return;try{await api(`/api/v1/threads/${id}/messages`,{method:"POST",json:{body}});toast("נשלח ✓",true);S.openThread=id;renderThreads()}catch(e){toast(e.message)}};
+  $("th-file").onchange=async()=>{const fs=$("th-file").files;if(!fs.length)return;const fd=new FormData();for(const f of fs)fd.append("files",f);
+    try{const r=await api(`/api/v1/threads/${id}/upload`,{method:"POST",body:fd});toast(`צורפו ${r.documents.length+r.duplicates.length} מסמכים ✓`,true);S.openThread=id;renderThreads()}catch(e){toast(e.message)}};
+  $("th-st").onclick=async()=>{try{await api(`/api/v1/threads/${id}/${t.status==="open"?"close":"reopen"}`,{method:"POST"});renderThreads()}catch(e){toast(e.message)}};
+}
+async function openDocFile(id){try{const d=await api(`/api/v1/documents/${id}`);if(d.attachment_name)return openOriginal(id);toast(`${d.extracted.vendor_name||d.extracted.customer_name||"מסמך"} · ${money2(d.decision.total_amount)} · ${STATUS[d.status]?STATUS[d.status][1]:d.status}`,true)}catch(e){toast(e.message)}}
+function newThread(pre){const staff=S.me.role!=="client";
+  openForm(staff?"פנייה ללקוח":'פנייה לרואה החשבון',[
+    {name:"kind",label:"סוג",type:"select",value:pre.kind||(staff?"document_request":"question"),options:[["question","שאלה"],["document_request","בקשת מסמכים"],["task","משימה"]]},
+    {name:"title",label:"נושא",required:true,value:pre.title||""},
+    {name:"body",label:"פירוט",required:true},
+    {name:"due_date",label:"עד מתי (לא חובה)",type:"date"}],
+  async v=>{const th=await api(`/api/v1/businesses/${bid()}/threads`,{method:"POST",json:{kind:v.kind,title:v.title,body:v.body,due_date:v.due_date||null,document_id:pre.document_id||null}});
+    toast(staff?"נשלח ללקוח ✓":'נשלח לרו"ח ✓',true);S.openThread=th.id;go("threads")},"שליחה")}
+
 /* ───────── בנק ───────── */
 async function renderBank(){
   const el=$("v-bank");if(!S.biz){el.innerHTML='<div class="card">קודם יוצרים עסק</div>';return}
   el.innerHTML=skeleton(3);const u=await api(`/api/v1/businesses/${bid()}/bank/unmatched`);
-  const tx=u.transactions_without_document.map(t=>`<div class="doc"><div class="d-top"><b>${esc(t.description||"חיוב")}</b><span class="amt">${money2(Math.abs(t.amount))}</span></div><div class="d-meta"><span>${dstr(t.date)}</span></div><div class="d-act"><span class="muted" style="align-self:center">יש קבלה? שלחו אותה (מייל / וואטסאפ / גרירה)</span><button class="ghost sm" data-ignore="${t.id}">הוצאה פרטית — להתעלם</button></div></div>`).join("");
+  const tx=u.transactions_without_document.map(t=>`<div class="doc"><div class="d-top"><b>${esc(t.description||"חיוב")}</b><span class="amt">${money2(Math.abs(t.amount))}</span></div><div class="d-meta"><span>${dstr(t.date)}</span>${t.account==="card"?'<span class="pill">💳 אשראי</span>':'<span class="pill">🏦 בנק</span>'}</div><div class="d-act"><span class="muted" style="align-self:center">יש קבלה? שלחו אותה (מייל / וואטסאפ / גרירה)</span><button class="ghost sm" data-ignore="${t.id}">הוצאה פרטית — להתעלם</button></div></div>`).join("");
   const nopay=u.documents_without_payment.map(d=>`<div class="doc"><div class="d-top"><b>${esc(d.vendor||"ספק")}</b><span class="amt">${money2(d.total)}</span></div><div class="d-meta"><span>${dstr(d.date)}</span><span class="pill warn">לא נמצא תשלום בבנק</span></div></div>`).join("");
-  el.innerHTML=`<h2>בנק</h2><div class="card"><p class="muted">מייבאים קובץ תנועות (CSV) מהבנק, והמערכת מתאימה לכל חיוב חשבונית ומראה מה חסר. הקובץ נשאר אצלכם בשרת.</p>
-   <div class="row"><label>קובץ CSV מהבנק<input type="file" id="bank-file" accept=".csv,text/csv"></label><button class="act" id="bank-go">ייבוא</button></div></div>
-   <h3>חיובים בלי קבלה (${u.transactions_without_document.length})</h3>${tx||'<div class="card muted">אין חיובים פתוחים 🎉</div>'}
+  const reqBtn=S.me.role!=="client"&&u.transactions_without_document.length?'<button class="sec sm" id="bank-req">📨 לבקש מהלקוח את הקבלות</button>':"";
+  el.innerHTML=`<h2>בנק ואשראי</h2><div class="card"><p class="muted">מייבאים קובץ תנועות מהבנק או מחברת האשראי (CSV, Excel, או הקובץ שהאתר מוריד), והמערכת מתאימה לכל חיוב חשבונית ומראה מה חסר. אפשר גם לחבר שירות שמזרים תנועות אוטומטית (ראו "עוד ← חיבורים").</p>
+   <div class="row"><label>קובץ מהבנק / מחברת האשראי<input type="file" id="bank-file" accept=".csv,.xlsx,.xls,.html,.htm,text/csv"></label><button class="act" id="bank-go">ייבוא</button></div></div>
+   <div class="row" style="align-items:center"><h3 style="margin:0">חיובים בלי קבלה (${u.transactions_without_document.length})</h3>${reqBtn}</div>${tx||'<div class="card muted">אין חיובים פתוחים 🎉</div>'}
    ${u.documents_without_payment.length?`<h3>חשבוניות בלי תשלום בבנק (${u.documents_without_payment.length})</h3>${nopay}`:""}`;
   $("bank-go").onclick=async()=>{const f=$("bank-file").files[0];if(!f)return toast("בחרו קובץ");const fd=new FormData();fd.append("file",f);
     try{const r=await api(`/api/v1/businesses/${bid()}/bank/import`,{method:"POST",body:fd});toast(`נקלטו ${r.imported} תנועות · הותאמו ${r.auto_matched} אוטומטית${r.skipped_duplicates?` · ${r.skipped_duplicates} כבר היו`:""}`,true);renderBank()}catch(e){toast(e.message)}};
   el.querySelectorAll("[data-ignore]").forEach(b=>b.onclick=async()=>{try{await api(`/api/v1/bank/${b.dataset.ignore}/ignore`,{method:"POST"});renderBank()}catch(e){toast(e.message)}});
+  const rq=$("bank-req");if(rq)rq.onclick=async()=>{try{const th=await api(`/api/v1/businesses/${bid()}/threads/request-receipts`,{method:"POST"});toast(th?"הבקשה נשלחה ללקוח ✓ — תיסגר לבד כשכל הקבלות יגיעו":"כל החיובים כבר התבקשו",true)}catch(e){toast(e.message)}};
 }
 
 /* ───────── דוחות ───────── */
@@ -339,13 +398,14 @@ async function renderReports(){
   el.innerHTML=`<h2>דוחות</h2><div class="banner">המערכת מכינה. מייצג מורשה (רו"ח, יועץ מס או עו"ד) מאשר, ורק הוא מגיש לרשות המסים.</div>
    <div class="card"><h3>הכנת דוח</h3><div class="row"><label>סוג<select id="r-kind"><option value="vat_period">מע"מ תקופתי</option><option value="income_tax_advance">מקדמות מס הכנסה</option><option value="annual_estimate">הערכה שנתית</option></select></label><label>שנה<input id="r-year" type="number" value="${now.getFullYear()}"></label><label>חודש<input id="r-month" type="number" min="1" max="12" value="${now.getMonth()||12}"></label><button class="act" id="r-go">הכנה</button></div>
    <div class="row hide" id="r-annual" style="margin-top:10px"><label>נקודות זיכוי<input id="r-cp" type="number" step="0.25" value="2.25"></label><label>תרומות השנה (₪)<input id="r-don" type="number" value="0"></label><label>הפסד מועבר משנים קודמות (₪)<input id="r-loss" type="number" value="0"></label></div></div>
-   <div class="card"><h3>חבילה לרואה החשבון</h3><p class="muted">קובץ אחד עם טבלת אקסל, הדוח המוכן וכל מסמכי המקור של התקופה.</p><div class="row"><label>שנה<input id="p-year" type="number" value="${now.getFullYear()}"></label><label>חודש בתקופה<input id="p-month" type="number" min="1" max="12" value="${now.getMonth()||12}"></label><button class="sec" id="p-go">הורדת חבילה</button><button class="ghost" id="u-go">קובץ מבנה אחיד (טיוטה)</button></div></div>
+   <div class="card"><h3>חבילה לרואה החשבון</h3><p class="muted">קובץ אחד עם טבלת אקסל, הדוח המוכן וכל מסמכי המקור של התקופה.</p><div class="row"><label>שנה<input id="p-year" type="number" value="${now.getFullYear()}"></label><label>חודש בתקופה<input id="p-month" type="number" min="1" max="12" value="${now.getMonth()||12}"></label><button class="sec" id="p-go">הורדת חבילה</button><button class="ghost" id="u-go">קובץ מבנה אחיד (טיוטה)</button><button class="ghost" id="j-go">יומן פקודות (CSV)</button></div></div>
    ${reps.length?reps.map(reportCard).join(""):'<div class="card muted">עוד לא הוכנו דוחות.</div>'}`;
   const toggleAnnual=()=>$("r-annual").classList.toggle("hide",$("r-kind").value!=="annual_estimate");$("r-kind").onchange=toggleAnnual;toggleAnnual();
   $("r-go").onclick=async()=>{const k=$("r-kind").value,q=new URLSearchParams({kind:k,year:$("r-year").value});if(k!=="annual_estimate")q.set("month",$("r-month").value);else{q.set("credit_points",$("r-cp").value||2.25);q.set("donations",$("r-don").value||0);q.set("carried_loss",$("r-loss").value||0)}
     try{await api(`/api/v1/businesses/${bid()}/reports?${q}`,{method:"POST"});toast("הדוח הוכן",true);renderReports()}catch(e){toast(e.message)}};
   $("p-go").onclick=async()=>{try{const r=await api(`/api/v1/businesses/${bid()}/accountant-package?year=${$("p-year").value}&month=${$("p-month").value}`,{raw:true});saveBlob(await r.blob(),`package_${$("p-year").value}-${$("p-month").value}.zip`)}catch(e){toast(e.message)}};
   $("u-go").onclick=async()=>{try{const r=await api(`/api/v1/businesses/${bid()}/unified-file?year=${$("p-year").value}`,{raw:true});saveBlob(await r.blob(),`unified_${$("p-year").value}.zip`)}catch(e){toast(e.message)}};
+  $("j-go").onclick=async()=>{try{const r=await api(`/api/v1/businesses/${bid()}/export/journal?year=${$("p-year").value}`,{raw:true});saveBlob(await r.blob(),`journal_${$("p-year").value}.csv`)}catch(e){toast(e.message)}};
   el.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>approve(+b.dataset.approve));
   el.querySelectorAll("[data-submit]").forEach(b=>b.onclick=()=>markSubmitted(+b.dataset.submit));
 }
@@ -373,17 +433,30 @@ async function renderMore(){
       <label>הפסד מועבר (₪)<input id="a-loss" type="number" value="0"></label>
       <button class="act" id="a-go">הרצת יועץ</button></div>
     <div id="a-out"></div>
+    <h3 style="margin-top:18px">🎯 תכנון משולב: איך לחלק את הכסף הפנוי עד סוף השנה</h3>
+    <p class="muted">המערכת בודקת כל שקל במודל המס המלא (מדרגות, ביטוח לאומי, תקרות) ומחלקת אותו למקום שחוסך הכי הרבה. משתמשת גם בנתוני הפנסיה, הקרן והתחזית שלמעלה.</p>
+    <div class="row"><label>כסף פנוי להפקדות עד 31.12 (₪)<input id="o-budget" type="number" value="20000"></label>
+      <label>תרומות שממילא מתכננים (₪)<input id="o-don" type="number" value="0"></label>
+      <label>תחזית רווח לשנה הבאה (₪)<input id="o-next" type="number" placeholder="לבדיקת תזמון הכנסה"></label></div>
+    <details style="margin-top:8px"><summary>🪖 מתכננים מילואים?</summary><div class="row" style="margin-top:8px"><label>ימי מילואים צפויים<input id="o-days" type="number" value="0"></label>
+      <label>הכנסה חודשית שלפיה נקבעו המקדמות לביטוח לאומי<input id="o-base" type="number" value="0"></label>
+      <label>הכנסה חודשית אמיתית צפויה<input id="o-real" type="number" value="0"></label></div></details>
+    <button class="act" id="o-go" style="margin-top:8px">חישוב תכנון</button><div id="o-out"></div>
     <h3 style="margin-top:18px">🧮 מה אם...</h3>
     <p class="muted">בנו תרחישים וראו מה ישתנה בנטל המס (מס הכנסה + ביטוח לאומי) לפני שמחליטים.</p>
     <div id="wi-list"></div>
     <div class="row"><label>הוסיפו תרחיש<select id="wi-type"></select></label><button class="sec" id="wi-add">+ הוספה</button><button class="act" id="wi-run">חישוב</button></div>
     <div id="wi-out"></div></details>
+  <details class="card" id="m-profile"><summary><b>👤 כרטיס לקוח</b></summary><div id="prof"></div></details>
+  <details class="card" id="m-conn"><summary><b>🔌 חיבורים וקריאת מסמכים</b></summary><div id="conn"></div></details>
   <details class="card" id="m-ar"><summary><b>💰 גבייה מלקוחות</b></summary><div id="ar"></div></details>
   <details class="card" id="m-pnl"><summary><b>📈 רווח והפסד לפי חודש</b></summary><div class="row" style="margin:8px 0"><label>שנה<input id="pnl-year" type="number" value="${new Date().getFullYear()}"></label><button class="sec" id="pnl-go">הצגה</button></div><div id="pnl"></div></details>
   <details class="card" id="m-vendors"><summary><b>🧠 מה המערכת למדה</b></summary><div id="vend"></div></details>
   <details class="card" id="m-rules"><summary><b>📚 כללי המס ומקורותיהם</b></summary><div id="rules"></div></details>
   <details class="card" id="m-audit"><summary><b>🧾 יומן פעולות ופרטיות</b></summary><div class="row" style="margin:8px 0"><button class="sec" id="au-verify">בדיקת שלמות היומן</button><button class="sec" id="pv-export">ייצוא כל המידע</button><button class="ghost" id="pv-purge">מחיקת טקסט גולמי</button></div><div id="audit"></div></details>`;
-  $("a-go").onclick=runAdvisor;initWhatIf();
+  $("a-go").onclick=runAdvisor;initWhatIf();$("o-go").onclick=runOptimize;
+  $("m-profile").addEventListener("toggle",e=>e.target.open&&loadProfile());
+  $("m-conn").addEventListener("toggle",e=>e.target.open&&loadConn(),{once:true});
   if(S.openAdvisor){S.openAdvisor=false;$("m-advisor").open=true;setTimeout(()=>$("m-advisor").scrollIntoView({behavior:"smooth",block:"start"}),50)}
   $("m-vendors").addEventListener("toggle",e=>e.target.open&&loadVendors(),{once:true});
   $("m-ar").addEventListener("toggle",e=>e.target.open&&loadAR());
@@ -442,6 +515,31 @@ async function runWhatIf(){if(!S.biz)return;if(!WI.length)return toast("הוסי
        ${x.notes.length?`<ul>${x.notes.map(n=>`<li class="muted">${esc(n)}</li>`).join("")}</ul>`:""}</div>`).join("")}
      ${r.scenarios.length>1?`<div class="doc"><div class="d-top"><b>כל התרחישים יחד</b><span>${sign(r.combined.delta_total)}</span></div></div>`:""}
      <p class="muted">${esc(r.disclaimer)}</p>`}catch(e){toast(e.message)}}
+async function runOptimize(){if(!S.biz)return;const n=id=>+$(id).value||0;$("o-out").innerHTML=skeleton(2);
+  const body={year:+$("a-year").value,budget:n("o-budget"),credit_points:+$("a-cp").value||2.25,existing_pension:n("a-pen"),existing_keren:n("a-ker"),
+    carried_loss:n("a-loss"),donations_done:n("a-don"),planned_donations:n("a-don")+n("o-don")};
+  if($("a-proj").value)body.projected_profit=+$("a-proj").value;if($("o-next").value)body.next_year_profit=+$("o-next").value;
+  if(n("o-days")>0)body.reserve={planned_days:n("o-days"),ni_monthly_base:n("o-base"),actual_monthly_income:n("o-real")};
+  try{const r=await api(`/api/v1/businesses/${bid()}/advisor/optimize`,{method:"POST",json:body});const pl=r.plan,b=r.bracket;
+    const rows=pl.allocation.map(a=>`<tr><td><b>${esc(a.label)}</b><br><small class="muted">${esc(a.liquidity)}</small></td><td>${money(a.amount)}</td><td>${Math.round(a.saving_per_shekel*100)}%</td></tr>`).join("");
+    let html=`<div class="kpis"><div class="kpi"><b>${money(pl.total_saving)}</b><span>חיסכון במס ובביטוח לאומי</span><small class="muted">נטל ${money(pl.burden_before)} ← ${money(pl.burden_after)}</small></div>
+      <div class="kpi"><b>${Math.round(b.marginal_rate*100)}%</b><span>שיעור שולי</span><small class="muted">${b.to_lower_bracket?`עוד ${money(b.to_lower_bracket)} ניכויים ותרדו מדרגה`:"מדרגה ראשונה"}</small></div></div>
+      ${rows?`<table class="opt"><thead><tr><th>לאן</th><th>סכום</th><th>חוזר כחיסכון</th></tr></thead><tbody>${rows}</tbody></table>`:'<p class="muted">אין כרגע מנוף פנוי שחוסך מס בתקציב הזה.</p>'}
+      ${pl.unused_budget>0?`<p class="muted">נשארו ${money(pl.unused_budget)} — כל התקרות מוצו.</p>`:""}<p class="muted">${esc(pl.note)}</p>`;
+    if(r.timing)html+=`<div class="doc"><b>⏱️ תזמון הכנסה בין השנים</b><p>${r.timing.best_shift>0?`הזזה של כ-${money(r.timing.best_shift)} הכנסה לשנה הבאה חוסכת כ-${money(r.timing.saving)} (שולי השנה ${Math.round(r.timing.this_year_marginal*100)}% מול ${Math.round(r.timing.next_year_marginal*100)}% בשנה הבאה).`:"אין יתרון בהזזת הכנסה — השנה הבאה צפויה באותה מדרגה או גבוהה יותר."}</p><p class="muted">${esc(r.timing.legal_note)}</p></div>`;
+    if(r.reserve_duty){const v=r.reserve_duty;html+=`<div class="doc"><b>🪖 מילואים</b><p>תגמול יומי היום: <b>${money2(v.daily_now)}</b>${v.extra_compensation>0?` · אחרי עדכון הבסיס: <b>${money2(v.daily_if_updated)}</b> — תוספת של כ-<b>${money(v.extra_compensation)}</b> על ${v.planned_days} ימים`:" · עדכון הבסיס לא יגדיל את התגמול"}</p>
+      <ul>${v.actions.map(x=>`<li>${esc(x)}</li>`).join("")}</ul><p class="muted">⚠️ ${esc(v.condition)}. ${esc(v.cash_effect)}. ${v.verified?"":"הסכומים מאתר ביטוח לאומי, לא אומתו מול הדף המלא."}</p></div>`}
+    $("o-out").innerHTML=html+`<p class="muted">${esc(r.disclaimer)}</p>`}catch(e){$("o-out").innerHTML="";toast(e.message)}}
+async function loadProfile(){if(!S.biz)return;const p=await api(`/api/v1/businesses/${bid()}/profile`);const staff=S.me.role!=="client";
+  $("prof").innerHTML=`<div class="row"><label>מייל ליצירת קשר<input id="pr-mail" type="email" value="${esc(p.contact_email||"")}"></label><label>תגיות (ענף, סוג ליווי)<input id="pr-tags" value="${esc(p.tags||"")}"></label></div>
+    ${staff?`<label style="margin-top:8px">הערות פנימיות (רק המשרד רואה)<textarea id="pr-notes">${esc(p.internal_notes||"")}</textarea></label>`:""}
+    <p class="muted">פניות פתוחות: ${p.threads.waiting_on_client} מחכות ללקוח · ${p.threads.waiting_on_accountant} מחכות לרו"ח</p><button class="sec" id="pr-save">שמירה</button>`;
+  $("pr-save").onclick=async()=>{const body={contact_email:$("pr-mail").value.trim()||null,tags:$("pr-tags").value.trim()||null};if(staff)body.internal_notes=$("pr-notes").value;
+    try{await api(`/api/v1/businesses/${bid()}/profile`,{method:"PATCH",json:body});toast("נשמר ✓",true)}catch(e){toast(e.message)}}}
+async function loadConn(){if(!S.biz)return;const c=await api(`/api/v1/businesses/${bid()}/connections`),x=c.extraction,yes=b=>b?'<span class="pill ok">פעיל</span>':'<span class="pill warn">לא מוגדר</span>';
+  $("conn").innerHTML=`<p><b>📷 קריאת תמונות ו-PDF סרוק במחשב (OCR)</b> ${yes(x.ocr_local)}<br><span class="muted">נקרא בשרת, בלי לשלוח החוצה. נבדק תמיד בעין לפני אישור.</span></p>
+   <p><b>🤖 קריאה בבינה מלאכותית</b> ${x.llm_provider?`<span class="pill ok">${esc(x.llm_provider)}</span>`:'<span class="pill warn">לא מוגדר</span>'} ${x.llm_consent?'<span class="pill ok">העסק הסכים</span>':'<span class="pill">העסק לא הסכים — לא נשלח</span>'}<br><span class="muted">מדויק יותר בצילומים קשים. נשלח רק בהסכמת העסק.</span></p>
+   <p><b>🏦 הזרמת תנועות בנק/אשראי</b> ${yes(c.transactions.signed)}<br><span class="muted">שירות חיבור בנק שולח לכתובת: </span><code>${esc(c.transactions.webhook_path)}</code><br><span class="muted">חתימה: X-CPA-Signature (HMAC-SHA256). או דרך ה-API עם מפתח: POST /api/v1/businesses/${bid()}/bank/transactions</span></p>`}
 async function loadAR(){if(!S.biz)return;const r=await api(`/api/v1/businesses/${bid()}/receivables`);
   const B=[["0-30","עד 30 יום"],["31-60","31–60"],["61-90","61–90"],["90+","מעל 90"]];
   $("ar").innerHTML=`<div class="kpis">${B.map(([k,l])=>`<div class="kpi"><b>${money(r.buckets[k])}</b><span>${l}</span></div>`).join("")}</div><p class="muted">${esc(r.note)}</p>`+
