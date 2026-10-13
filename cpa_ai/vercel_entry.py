@@ -44,3 +44,24 @@ except Exception as exc:  # noqa: BLE001 — במקום 500 סתמי מציגי�
     @app.get("/{path:path}")
     def _broken(path: str = ""):
         return PlainTextResponse(_hint, status_code=503)
+
+
+def _restore_original_path(application) -> None:
+    """Vercel מעביר את הבקשה כ-/api/index?__p=<הנתיב המקורי> (ראו vercel.json), כי חלק מהגרסאות מנתבות לפי
+    יעד ה-rewrite. כאן משחזרים את הנתיב המקורי לפני הניתוב; אם הנתיב כבר מקורי — לא נוגעים בו."""
+    from urllib.parse import parse_qsl, urlencode
+
+    @application.middleware("http")
+    async def restore_path(request, call_next):
+        scope = request.scope
+        if scope["path"] in ("/api/index", "/api/index/"):
+            pairs = parse_qsl(scope.get("query_string", b"").decode(), keep_blank_values=True)
+            original = next((v for k, v in pairs if k == "__p"), None)
+            if original is not None:
+                path = "/" + original.lstrip("/")
+                scope["path"], scope["raw_path"] = path, path.encode()
+                scope["query_string"] = urlencode([(k, v) for k, v in pairs if k != "__p"]).encode()
+        return await call_next(request)
+
+
+_restore_original_path(app)

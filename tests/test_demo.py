@@ -58,3 +58,20 @@ def test_vercel_entry_runs_demo_without_keys_and_never_exposes_a_configured_db(m
     r = TestClient(mod.app).get("/api/v1/health")
     assert r.json()["demo"] is True
     sys.modules.pop("cpa_ai.vercel_entry", None)
+
+
+def test_vercel_rewrite_path_is_restored(monkeypatch):
+    """Vercel מנתב ל-/api/index?__p=<נתיב>; האפליקציה משחזרת את הנתיב המקורי (ושומרת פרמטרים אחרים)."""
+    for k in ("CPA_AI_USERS", "CPA_AI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("CPA_AI_STORAGE", "disk")
+    monkeypatch.setenv("CPA_AI_OCR", "auto")
+    sys.modules.pop("cpa_ai.vercel_entry", None)
+    mod = importlib.import_module("cpa_ai.vercel_entry")
+    c = TestClient(mod.app)
+    assert c.get("/api/index?__p=").status_code == 200 and "<html" in c.get("/api/index?__p=").text.lower()
+    assert c.get("/api/index?__p=api/v1/health").json()["demo"] is True
+    docs = c.get("/api/index?__p=api/v1/businesses/1/documents&limit=2").json()
+    assert len(docs) == 2
+    assert c.get("/api/v1/health").json()["demo"] is True  # נתיב מקורי ללא שינוי
+    sys.modules.pop("cpa_ai.vercel_entry", None)
