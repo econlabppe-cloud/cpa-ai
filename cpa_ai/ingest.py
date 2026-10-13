@@ -242,6 +242,11 @@ def ingest(s: Session, biz: Business, item: IngestItem, actor: str, mode: str = 
     if not handled:
         result.notes.append("לא זוהתה חשבונית בהודעה")
 
+    if result.documents:
+        from . import collab
+        # מייל ו-WhatsApp מגיעים מהלקוח (או מספק שלו) — מצורפים לבקשת מסמכים פתוחה
+        collab.on_documents(s, biz, result.documents, item.source, actor,
+                            attach=item.source in ("email", "whatsapp"))
     event = s.scalar(select(InboundEvent).where(InboundEvent.source == item.source,
                                                 InboundEvent.source_ref == item.source_ref))
     if event:

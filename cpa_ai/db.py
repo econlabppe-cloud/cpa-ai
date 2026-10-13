@@ -31,6 +31,10 @@ class Business(Base):
     inbound_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True,
                                                       default=lambda: secrets.token_urlsafe(16))
     whatsapp_phone: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    # כרטיס לקוח (CRM): פרטי קשר ותיוג; הערות פנימיות גלויות לרו"ח בלבד
+    contact_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    tags: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -119,6 +123,35 @@ class Report(Base):
     # המערכת אינה מגישה לרשות המסים; כאן נרשם שהמייצג הגיש בפועל, עם מספר האישור שקיבל
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     submission_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Thread(Base):
+    """בקשה/שאלה/משימה בין הרו"ח ללקוח. `waiting_on` אומר אצל מי הכדור עכשיו."""
+    __tablename__ = "threads"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("businesses.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(24))  # document_request | question | task
+    title: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open | closed
+    waiting_on: Mapped[str] = mapped_column(String(16))  # client | accountant
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
+    refs: Mapped[dict] = mapped_column(JSON, default=dict)  # למשל {"bank_tx_ids": [...]}
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_role: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ThreadMessage(Base):
+    __tablename__ = "thread_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("threads.id"), index=True)
+    author: Mapped[str] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(16))  # client | accountant | system
+    body: Mapped[str] = mapped_column(Text)
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

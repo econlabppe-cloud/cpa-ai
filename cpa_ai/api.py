@@ -23,7 +23,7 @@ from .integrations.addresses import inbound_address
 from .rules import data
 from .security import Principal, RateLimiter, parse_users
 from .schemas import (ApprovalIn, BusinessIn, BusinessOut, DocumentOut, IncomeIn, ProcessTextIn, ReportOut,
-                      MarkPaidIn, ReviewIn, WhatIfIn)
+                      MarkPaidIn, ProfileIn, ReplyIn, ReviewIn, ThreadIn, WhatIfIn)
 
 STATIC = Path(__file__).parent / "static"
 SAFE_SERVE_MIMES = {"application/pdf", "image/jpeg", "image/png", "image/gif", "image/webp", "text/plain"}
@@ -131,7 +131,9 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
         bid = as_int(pp.get("bid"))
         if bid is None:
             from .db import BankTransaction, VendorRule
+            from .db import Thread
             model, key = (Document, "did") if "did" in pp else (BankTransaction, "tx_id") if "tx_id" in pp else \
+                (Thread, "thread_id") if "thread_id" in pp else \
                 (VendorRule if "/vendor-rules/" in path else Report, "rid") if "rid" in pp else (None, None)
             if model is not None:
                 ent = s.get(model, as_int(pp.get(key)) or 0)
@@ -258,6 +260,7 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
             pending = h["counts"]["pending"]
             businesses.append({"id": b.id, "name": b.name, "pending": pending, "bulk_ready": h["counts"]["bulk_ready"],
                                "bank_open": h["counts"]["bank_open"], "all_clear": h["all_clear"],
+                               "threads": h["threads"], "tags": b.tags,
                                "deadline": h["deadlines"][0]})
             for t in h["tasks"]:
                 tasks.append({**t, "business_id": b.id, "business_name": b.name})
@@ -318,9 +321,18 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
         return doc_out(res.documents[0])
 
     @app.post("/api/v1/businesses/{bid}/documents/upload", status_code=202)
-    async def upload(bid: int, files: list[UploadFile] = File(...), s=Depends(session), who=Depends(actor)):
+    async def upload(bid: int, files: list[UploadFile] = File(...), s=Depends(session),
+                     p: Principal = Depends(principal)):
         """העלאה (גרירה) של קובץ אחד או יותר: PDF, תמונה, טקסט. עוברת בדיוק את אותו צינור כמו מייל ווטסאפ."""
+        from . import collab
         biz = services.get(s, Business, bid)
+        out = await _ingest_files(s, biz, files, p.name or "anonymous")
+        if p.role == "client" and out["documents"]:  # הלקוח העלה — עונה לבקשת מסמכים פתוחה
+            collab.on_documents(s, biz, [s.get(Document, i) for i in out["documents"]], "upload", p.name or "client")
+            s.commit()
+        return out
+
+    async def _ingest_files(s, biz: Business, files: list[UploadFile], who: str) -> dict:
         out = {"documents": [], "needs_review": [], "duplicates": [], "notes": []}
         for f in files:
             content = await f.read()
@@ -581,6 +593,111 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
         services.audit(s, who, "bank_match", "bank_transaction", tx.id, document_id=doc.id)
         s.commit()
         return {"id": tx.id, "status": tx.status, "document_id": doc.id}
+
+    # --- עבודה משותפת רו"ח–לקוח: פניות, שרשור, כרטיס לקוח ---------------------------------
+    from . import collab
+    from .notify import Notifier
+    app.state.notifier = Notifier.from_env(_wa_client)
+
+    def _notify(s, th, p: Principal, text: str) -> None:
+        """מודיע לצד שהכדור אצלו. ללקוח: WhatsApp/מייל של העסק. לרו"ח: CPA_AI_ACCOUNTANT_EMAIL."""
+        biz = s.get(Business, th.business_id)
+        if th.waiting_on == "client":
+            kw = {"phone": biz.whatsapp_phone, "email": biz.contact_email}
+        else:
+            kw = {"phone": None, "email": os.getenv("CPA_AI_ACCOUNTANT_EMAIL")}
+        msg = f"{biz.name} — {th.title}\n{text[:600]}\n\nלצפייה ומענה: {os.getenv('CPA_AI_PUBLIC_URL', '')}/#threads"
+        try:
+            sent = app.state.notifier.send(subject=f"CPA-AI: {th.title}", text=msg, **kw)
+            services.audit(s, p.name or "anonymous", "notify", "thread", th.id, business_id=th.business_id,
+                           channels=sent, to=th.waiting_on)
+        except Exception as e:  # noqa: BLE001 — התראה לעולם לא מפילה את הפעולה
+            services.audit(s, p.name or "anonymous", "notify_failed", "thread", th.id, error=type(e).__name__)
+        s.commit()
+
+    @app.get("/api/v1/businesses/{bid}/threads")
+    def threads(bid: int, status: Optional[Literal["open", "closed"]] = None, s=Depends(session),
+                who=Depends(actor)):
+        services.get(s, Business, bid)
+        return [collab.thread_out(s, t) for t in collab.list_threads(s, [bid], status)]
+
+    @app.post("/api/v1/businesses/{bid}/threads", status_code=201)
+    def create_thread(bid: int, body: ThreadIn, s=Depends(session), p: Principal = Depends(principal)):
+        th = collab.create_thread(s, bid, kind=body.kind, title=body.title, body=body.body, author=p.name or "anonymous",
+                                  role=p.role, document_id=body.document_id, due_date=body.due_date)
+        _notify(s, th, p, body.body)
+        return collab.thread_out(s, th)
+
+    @app.post("/api/v1/businesses/{bid}/threads/request-receipts", status_code=201)
+    def request_receipts(bid: int, s=Depends(session), p: Principal = Depends(principal)):
+        th = collab.request_receipts(s, bid, p.name or "anonymous", p.role)
+        if th is None:
+            return Response(status_code=204)
+        _notify(s, th, p, th.title)
+        return collab.thread_out(s, th)
+
+    @app.get("/api/v1/threads/{thread_id}")
+    def get_thread(thread_id: int, s=Depends(session), who=Depends(actor)):
+        from .db import Thread
+        return collab.thread_out(s, services.get(s, Thread, thread_id), with_messages=True)
+
+    @app.post("/api/v1/threads/{thread_id}/messages")
+    def thread_reply(thread_id: int, body: ReplyIn, s=Depends(session), p: Principal = Depends(principal)):
+        th = collab.reply(s, thread_id, body=body.body, author=p.name or "anonymous", role=p.role)
+        _notify(s, th, p, body.body)
+        return collab.thread_out(s, th)
+
+    @app.post("/api/v1/threads/{thread_id}/upload", status_code=202)
+    async def thread_upload(thread_id: int, files: list[UploadFile] = File(...), s=Depends(session),
+                            p: Principal = Depends(principal)):
+        from .db import Thread
+        th = services.get(s, Thread, thread_id)
+        biz = services.get(s, Business, th.business_id)
+        out = await _ingest_files(s, biz, files, p.name or "anonymous")
+        ids = out["documents"] + [d["of"] for d in out["duplicates"]]
+        names = ", ".join(f"#{i}" for i in ids) or "—"
+        th = collab.reply(s, thread_id, body=f"📎 צורפו מסמכים: {names}", author=p.name or "anonymous", role=p.role,
+                          document_id=ids[0] if ids else None)
+        _notify(s, th, p, f"צורפו מסמכים: {names}")
+        return out
+
+    @app.post("/api/v1/threads/{thread_id}/{action}")
+    def thread_status(thread_id: int, action: Literal["close", "reopen"], s=Depends(session),
+                      p: Principal = Depends(principal)):
+        th = collab.set_status(s, thread_id, "closed" if action == "close" else "open", p.name or "anonymous", p.role)
+        return collab.thread_out(s, th)
+
+    @app.get("/api/v1/inbox")
+    def inbox(s=Depends(session), p: Principal = Depends(principal)):
+        """כל הפניות שמחכות לצד של המשתמש, בכל העסקים שמותרים לו."""
+        ids = [b.id for b in s.scalars(select(Business)) if p.can_access(b.id)]
+        side = collab.side_of(p.role)
+        rows = collab.list_threads(s, ids, status="open", waiting_on=side) if ids else []
+        names = {b.id: b.name for b in s.scalars(select(Business).where(Business.id.in_(ids)))} if ids else {}
+        return {"side": side, "threads": [{**collab.thread_out(s, t), "business_name": names.get(t.business_id)}
+                                          for t in rows]}
+
+    @app.get("/api/v1/businesses/{bid}/profile")
+    def get_profile(bid: int, s=Depends(session), p: Principal = Depends(principal)):
+        biz = services.get(s, Business, bid)
+        out = {"id": biz.id, "name": biz.name, "owner_name": biz.owner_name, "vat_id": biz.vat_id,
+               "contact_email": biz.contact_email, "whatsapp_phone": biz.whatsapp_phone, "tags": biz.tags,
+               "threads": collab.counts(s, biz.id)}
+        if p.role != "client":
+            out["internal_notes"] = biz.internal_notes
+        return out
+
+    @app.patch("/api/v1/businesses/{bid}/profile")
+    def update_profile(bid: int, body: ProfileIn, s=Depends(session), p: Principal = Depends(principal)):
+        biz = services.get(s, Business, bid)
+        changes = body.model_dump(exclude_unset=True)
+        if "internal_notes" in changes and p.role == "client":
+            raise HTTPException(403, "הערות פנימיות — לרו\"ח בלבד")
+        for k, v in changes.items():
+            setattr(biz, k, v)
+        services.audit(s, p.name or "anonymous", "profile_update", "business", biz.id, fields=sorted(changes))
+        s.commit()
+        return get_profile(bid, s, p)
 
     # --- חוויית לקוח: בית, אישור מרוכז, קובץ מקור, חבילה לרו"ח, זיכרון ספקים ---------------
     @app.get("/api/v1/businesses/{bid}/home")

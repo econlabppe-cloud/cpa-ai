@@ -136,6 +136,24 @@ class ReportOut(BaseModel):
     created_at: datetime
 
 
+class ThreadIn(BaseModel):
+    kind: Literal["document_request", "question", "task"]
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=5000)
+    document_id: Optional[int] = None
+    due_date: Optional[date] = None
+
+
+class ReplyIn(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
+class ProfileIn(BaseModel):
+    contact_email: Optional[str] = Field(None, max_length=200, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    tags: Optional[str] = Field(None, max_length=200)
+    internal_notes: Optional[str] = Field(None, max_length=5000)
+
+
 class MarkPaidIn(BaseModel):
     paid_on: Optional[date] = Field(None, description="תאריך התשלום; ריק = היום")
     unpaid: bool = Field(False, description="ביטול סימון תשלום")

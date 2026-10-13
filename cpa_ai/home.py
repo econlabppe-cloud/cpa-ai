@@ -132,6 +132,20 @@ def build_home(s: Session, biz: Business, today: date | None = None) -> dict:
                                 else f"{len(open_tx)} חיובים בבנק בלי קבלה (₪{total:,.0f})"),
                       "detail": "לשלוח את הקבלות, או לסמן שזו הוצאה פרטית",
                       "cta": {"label": "לבנק", "view": "bank"}})
+    from . import collab
+    threads = collab.counts(s, biz.id)
+    if threads["waiting_on_client"]:
+        n = threads["waiting_on_client"]
+        tasks.append({"id": "threads_client", "priority": 1 if threads["overdue"] else 2,
+                      "title": "הרו\"ח מחכה לתשובה שלך" if n == 1 else f"{n} פניות מהרו\"ח מחכות לך",
+                      "detail": ("יש פנייה שעבר מועדה" if threads["overdue"] else "שאלה, מסמך חסר או משימה קצרה"),
+                      "cta": {"label": "לפניות", "view": "threads"}, "audience": "client"})
+    if threads["waiting_on_accountant"]:
+        n = threads["waiting_on_accountant"]
+        tasks.append({"id": "threads_accountant", "priority": 2,
+                      "title": "פנייה מהלקוח מחכה לרו\"ח" if n == 1 else f"{n} פניות מהלקוח מחכות לרו\"ח",
+                      "detail": "תשובה, מסמך שהועלה או שאלה חדשה",
+                      "cta": {"label": "לפניות", "view": "threads"}, "audience": "accountant"})
     for miss in insights.missing_recurring(s, biz, today)[:3]:
         typical = f" (בדרך כלל ₪{miss['typical_total']:,.0f})" if miss["typical_total"] else ""
         tasks.append({"id": "missing_recurring", "priority": 3,
@@ -191,6 +205,7 @@ def build_home(s: Session, biz: Business, today: date | None = None) -> dict:
         "all_clear": not any(t["priority"] <= 3 for t in tasks),
         "deadlines": deadlines,
         "deadline_note": {"verified": data.FILING_DAY.source.verified, "text": data.FILING_DAY.source.note},
+        "threads": threads,
         "days_to_year_end": days_to_year_end,
         "counts": {"pending": len(pending), "bulk_ready": len(ready), "documents": len(docs),
                    "bank_open": len(open_tx)},
