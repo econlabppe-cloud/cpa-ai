@@ -142,6 +142,9 @@ def test_vercel_entrypoint_explains_missing_config(monkeypatch):
     from fastapi.testclient import TestClient
     for k in ("CPA_AI_USERS", "CPA_AI_API_KEY", "CPA_AI_DATABASE_URL", "CPA_AI_ALLOW_INSECURE"):
         monkeypatch.delenv(k, raising=False)
+    # api.index קובע ברירות מחדל לסביבה בזמן הייבוא; monkeypatch מחזיר אותן אחרי הבדיקה
+    monkeypatch.setenv("CPA_AI_STORAGE", "disk")
+    monkeypatch.setenv("CPA_AI_OCR", "auto")
     sys.modules.pop("api.index", None)
     mod = importlib.import_module("api.index")
     r = TestClient(mod.app).get("/")
