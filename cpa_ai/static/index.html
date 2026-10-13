@@ -595,7 +595,10 @@ function openSettings(note){openForm("הגדרות",[...(note?[{name:"n",type:"n
   async v=>{store("cpa_actor",v.actor);store("cpa_key",v.key);await loadBiz();go(S.view)})}
 $("btn-settings").onclick=()=>openSettings();
 
-(async()=>{drawNav();await loadBiz();go("home")})();
+async function demoBanner(){try{const h=await fetch("/api/v1/health").then(r=>r.json());if(!h.demo)return;S.demo=true;
+  const b=document.createElement("div");b.className="banner";b.style.cssText="margin:0;border-radius:0;text-align:center;position:sticky;top:0;z-index:6";
+  b.innerHTML="🧪 <b>מצב הדגמה</b> — נתונים בדויים, צפייה בלבד. כדי להשתמש באמת: להגדיר מפתחות ומסד נתונים (ראו README).";document.body.prepend(b)}catch(e){}}
+(async()=>{drawNav();await demoBanner();await loadBiz();go("home")})();
 </script>
 </body>
 </html>

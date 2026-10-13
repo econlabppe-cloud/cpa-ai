@@ -135,18 +135,17 @@ def test_postgres_urls_from_providers_use_psycopg3():
     assert normalize_url("sqlite:///x.db") == "sqlite:///x.db"
 
 
-def test_vercel_entrypoint_explains_missing_config(monkeypatch):
+def test_vercel_entrypoint_explains_broken_config(monkeypatch):
     import importlib
     import sys
 
     from fastapi.testclient import TestClient
-    for k in ("CPA_AI_USERS", "CPA_AI_API_KEY", "CPA_AI_DATABASE_URL", "CPA_AI_ALLOW_INSECURE"):
-        monkeypatch.delenv(k, raising=False)
-    # api.index קובע ברירות מחדל לסביבה בזמן הייבוא; monkeypatch מחזיר אותן אחרי הבדיקה
+    monkeypatch.setenv("CPA_AI_USERS", '{"k":"m"}')
+    monkeypatch.setenv("CPA_AI_DATABASE_URL", "postgresql://u:p@127.0.0.1:1/db")  # לא זמין
     monkeypatch.setenv("CPA_AI_STORAGE", "disk")
     monkeypatch.setenv("CPA_AI_OCR", "auto")
     sys.modules.pop("cpa_ai.vercel_entry", None)
     mod = importlib.import_module("cpa_ai.vercel_entry")
     r = TestClient(mod.app).get("/")
-    assert r.status_code == 503 and "CPA_AI_USERS" in r.text and "CPA_AI_DATABASE_URL" in r.text
+    assert r.status_code == 503 and "לא עלתה" in r.text and "secret" not in r.text
     sys.modules.pop("cpa_ai.vercel_entry", None)

@@ -33,8 +33,12 @@ MAX_UPLOAD = 10 * 1024 * 1024
 DEFAULT_RATE_LIMITS = {"api": (600, 60), "inbound": (120, 60), "authfail": (20, 300)}
 
 
+# מצב הדגמה: פעולות שרק מחשבות ואינן מזינות מידע (ההכנה של דוחות נשמרת בדמו בלבד)
+DEMO_WRITABLE = ("/advisor/optimize", "/advisor/what-if")
+
+
 def create_app(database_url: str | None = None, api_key: str | None = None,
-               users: dict | None = None, rate_limits: dict | None = None) -> FastAPI:
+               users: dict | None = None, rate_limits: dict | None = None, demo: bool = False) -> FastAPI:
     """users: {מפתח: "שם"} (מנהל) או {מפתח: {"name","role","businesses"}}. השם ביומן נגזר מהמפתח ולא
     מכותרת שהלקוח שולח. api_key: מפתח משותף יחיד (מנהל; השם הוא מה שנשלח ב-X-Actor)."""
     SessionLocal = make_sessionmaker(database_url)
@@ -59,7 +63,9 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
     if not principals:
         shared = api_key if api_key is not None else os.getenv("CPA_AI_API_KEY", "")
         principals = {shared: Principal(None, "admin", None)} if shared else {}
-    if not principals and os.getenv("CPA_AI_ALLOW_INSECURE") != "1":
+    if demo:
+        principals = {}  # הדגמה: בלי מפתח, אבל קריאה בלבד ועל נתוני דמו זמניים (ראו guard)
+    if not principals and not demo and os.getenv("CPA_AI_ALLOW_INSECURE") != "1":
         raise RuntimeError("לא הוגדר CPA_AI_API_KEY (או CPA_AI_USERS). לפיתוח מקומי בלבד: CPA_AI_ALLOW_INSECURE=1")
 
     def session():
@@ -152,6 +158,11 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
     @app.middleware("http")
     async def guard(request: Request, call_next):
         path = request.url.path
+        if demo and request.method not in ("GET", "HEAD", "OPTIONS") and path.startswith("/api/") \
+                and not path.endswith(DEMO_WRITABLE):
+            return _secure(JSONResponse({"detail": "זהו מצב הדגמה — לא ניתן לשמור שינויים. כדי להשתמש במערכת "
+                                                   "באמת, הגדירו מפתחות ומסד נתונים (ראו README)."},
+                                        status_code=403), request, path)
         ip = client_ip(request)
         if path.startswith("/api/v1/inbound/"):
             bucket, key = "inbound", f"inbound:{ip}"
@@ -231,7 +242,7 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
 
     @app.get("/api/v1/health")
     def health():
-        return {"status": "ok", "auth_required": bool(principals)}
+        return {"status": "ok", "auth_required": bool(principals), "demo": demo}
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest():

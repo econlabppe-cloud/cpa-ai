@@ -8,6 +8,10 @@ os.environ.setdefault("CPA_AI_STORAGE", "db")          # אין דיסק קבו�
 os.environ.setdefault("CPA_AI_OCR", "off")              # אין Tesseract בסביבת הפונקציה
 
 
+def _missing_auth() -> bool:
+    return not (os.getenv("CPA_AI_USERS") or os.getenv("CPA_AI_API_KEY"))
+
+
 def _missing() -> list[str]:
     out = []
     if not (os.getenv("CPA_AI_USERS") or os.getenv("CPA_AI_API_KEY")):
@@ -19,7 +23,13 @@ def _missing() -> list[str]:
 
 try:
     from .api import create_app
-    app = create_app()
+    if _missing_auth():
+        # אין מפתחות: מצב הדגמה על מסד זמני בזיכרון (גם אם הוגדר מסד — לעולם לא חושפים אותו בלי הרשאות)
+        from . import demo
+        app = create_app("sqlite://", demo=True)
+        demo.seed(app.state.SessionLocal)
+    else:
+        app = create_app()
 except Exception as exc:  # noqa: BLE001 — במקום 500 סתמי מציגים מה חסר; הפרטים המלאים רק בלוג של Vercel
     traceback.print_exc()
     from fastapi import FastAPI
