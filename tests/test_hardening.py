@@ -145,8 +145,8 @@ def test_vercel_entrypoint_explains_missing_config(monkeypatch):
     # api.index קובע ברירות מחדל לסביבה בזמן הייבוא; monkeypatch מחזיר אותן אחרי הבדיקה
     monkeypatch.setenv("CPA_AI_STORAGE", "disk")
     monkeypatch.setenv("CPA_AI_OCR", "auto")
-    sys.modules.pop("api.index", None)
-    mod = importlib.import_module("api.index")
+    sys.modules.pop("cpa_ai.vercel_entry", None)
+    mod = importlib.import_module("cpa_ai.vercel_entry")
     r = TestClient(mod.app).get("/")
     assert r.status_code == 503 and "CPA_AI_USERS" in r.text and "CPA_AI_DATABASE_URL" in r.text
-    sys.modules.pop("api.index", None)
+    sys.modules.pop("cpa_ai.vercel_entry", None)
