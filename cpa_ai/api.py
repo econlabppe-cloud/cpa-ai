@@ -68,12 +68,20 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
     if not principals and not demo and os.getenv("CPA_AI_ALLOW_INSECURE") != "1":
         raise RuntimeError("לא הוגדר CPA_AI_API_KEY (או CPA_AI_USERS). לפיתוח מקומי בלבד: CPA_AI_ALLOW_INSECURE=1")
 
+    # הדגמה: מסד SQLite אחד בזיכרון עם חיבור יחיד — בקשות מקבילות היו מתנגשות ("bad parameter or API misuse"),
+    # ולכן מעבדים אותן בזו אחר זו. בשימוש רגיל (Postgres/קובץ) אין נעילה
+    demo_lock = threading.Lock()
+
     def session():
+        if demo:
+            demo_lock.acquire()
         s = SessionLocal()
         try:
             yield s
         finally:
             s.close()
+            if demo:
+                demo_lock.release()
 
     def authenticate(request: Request, x_api_key: Optional[str], x_actor: Optional[str]) -> Principal:
         cached = getattr(request.state, "principal", None)
@@ -244,15 +252,23 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
     def health():
         return {"status": "ok", "auth_required": bool(principals), "demo": demo}
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        svg = ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' "
+               "x2='1' y2='1'><stop offset='0' stop-color='#4f46e5'/><stop offset='1' stop-color='#7c3aed'/>"
+               "</linearGradient></defs><rect width='32' height='32' rx='9' fill='url(#g)'/><path d='M9 17.5l4.5 4.5L23 11' "
+               "stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>")
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
+
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest():
         """התקנה על מסך הבית בטלפון. האייקון מוטמע כדי שלא תהיה בקשת רשת נוספת."""
         icon = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
-                "%3Crect width='32' height='32' rx='7' fill='%232457e6'/%3E%3Cpath d='M9 17l5 5 9-11' stroke='white' "
+                "%3Crect width='32' height='32' rx='7' fill='%234f46e5'/%3E%3Cpath d='M9 17l5 5 9-11' stroke='white' "
                 "stroke-width='3.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
         return JSONResponse({
             "name": "CPA-AI — הנהלת חשבון", "short_name": "CPA-AI", "lang": "he", "dir": "rtl",
-            "start_url": "/", "display": "standalone", "background_color": "#f4f6fb", "theme_color": "#2457e6",
+            "start_url": "/", "display": "standalone", "background_color": "#f5f6fb", "theme_color": "#4f46e5",
             "icons": [{"src": icon, "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]},
             media_type="application/manifest+json")
 

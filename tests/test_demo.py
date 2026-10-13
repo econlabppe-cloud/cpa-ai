@@ -75,3 +75,22 @@ def test_vercel_rewrite_path_is_restored(monkeypatch):
     assert len(docs) == 2
     assert c.get("/api/v1/health").json()["demo"] is True  # נתיב מקורי ללא שינוי
     sys.modules.pop("cpa_ai.vercel_entry", None)
+
+
+def test_demo_survives_concurrent_requests():
+    """מסד הדמו הוא חיבור SQLite יחיד; בקשות מקבילות היו מחזירות 500 עד שהוספנו סידור."""
+    from concurrent.futures import ThreadPoolExecutor
+    app = create_app("sqlite://", demo=True)
+    demo.seed(app.state.SessionLocal)
+    c = TestClient(app)
+    paths = ["/api/v1/businesses/1/home", "/api/v1/businesses/1/documents", "/api/v1/dashboard",
+             "/api/v1/businesses/1/threads", "/api/v1/businesses/1/reports"] * 6
+    with ThreadPoolExecutor(10) as ex:
+        codes = list(ex.map(lambda p: c.get(p).status_code, paths))
+    assert set(codes) == {200}
+
+
+def test_favicon_is_served():
+    c = TestClient(create_app("sqlite://", demo=True))
+    r = c.get("/favicon.ico")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg")
