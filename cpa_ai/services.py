@@ -225,11 +225,55 @@ def add_income(s: Session, business_id: int, inc: IncomeIn, actor: str) -> Docum
 
 
 def list_documents(s: Session, business_id: int, status: str | None, limit: int = 100,
-                   offset: int = 0) -> list[Document]:
-    q = select(Document).where(Document.business_id == business_id)
+                   offset: int = 0, *, q: str | None = None, direction: str | None = None,
+                   date_from: date | None = None, date_to: date | None = None) -> list[Document]:
+    query = select(Document).where(Document.business_id == business_id)
     if status:
-        q = q.where(Document.status == status)
-    return list(s.scalars(q.order_by(Document.id.desc()).limit(limit).offset(offset)))
+        query = query.where(Document.status == status)
+    if direction:
+        query = query.where(Document.direction == direction)
+    if date_from:
+        query = query.where(Document.doc_date >= date_from)
+    if date_to:
+        query = query.where(Document.doc_date <= date_to)
+    query = query.order_by(Document.id.desc())
+    if not q or not q.strip():
+        return list(s.scalars(query.limit(limit).offset(offset)))
+    # חיפוש חופשי בפייתון: JSON נשמר עם escape ליוניקוד, ולכן LIKE במסד לא מוצא עברית
+    needle = q.strip().lower()
+    digits = needle.replace(",", "").replace("₪", "")
+    hits = [d for d in s.scalars(query.limit(5000)) if _matches(d, needle, digits)]
+    return hits[offset:offset + limit]
+
+
+def _matches(d: Document, needle: str, digits: str) -> bool:
+    e, dec = d.extracted, d.decision
+    hay = " ".join(str(x) for x in (
+        e.get("vendor_name"), e.get("customer_name"), e.get("doc_number"), e.get("vendor_id"),
+        e.get("customer_id"), e.get("allocation_number"), dec.get("category_label"), *(e.get("line_items") or []),
+        d.attachment_name) if x).lower()
+    if all(tok in hay for tok in needle.split()):
+        return True
+    try:
+        amount = float(digits)
+    except ValueError:
+        return False
+    return any(abs(float(v) - amount) < 0.01 for v in (dec.get("total_amount"), dec.get("pre_vat_amount"),
+                                                       dec.get("vat_amount")) if v is not None)
+
+
+def reopen_document(s: Session, doc_id: int, actor: str) -> Document:
+    """החזרת מסמך מאושר לבדיקה (טעות באישור). אסור אם התקופה או השנה כבר אושרו."""
+    doc = get(s, Document, doc_id)
+    if doc.status != "confirmed":
+        raise Conflict("אפשר להחזיר לבדיקה רק מסמך מאושר")
+    _assert_period_open(s, doc.business_id, doc.period_date or doc.doc_date)
+    if _annual_locked(s, doc.business_id, doc.doc_date):
+        raise Conflict("המסמך נכלל בהערכה שנתית מאושרת — לא ניתן לשנותו")
+    doc.status, doc.reviewed_by = "pending_review", None
+    audit(s, actor, "reopen", "document", doc.id)
+    s.commit()
+    return doc
 
 
 # דוחות שאישורם נועל תקופה לצורך שיוך מסמך מאוחר. הערכה שנתית אינה דוח מוגש ואינה מזיזה מסמכים

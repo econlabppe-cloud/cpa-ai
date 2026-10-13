@@ -146,6 +146,13 @@ def build_home(s: Session, biz: Business, today: date | None = None) -> dict:
                       "title": "פנייה מהלקוח מחכה לרו\"ח" if n == 1 else f"{n} פניות מהלקוח מחכות לרו\"ח",
                       "detail": "תשובה, מסמך שהועלה או שאלה חדשה",
                       "cta": {"label": "לפניות", "view": "threads"}, "audience": "accountant"})
+    from . import health
+    serious = [i for i in health.books_health(s, biz, today.year, today)["issues"] if i["severity"] == "high"]
+    if serious:
+        tasks.append({"id": "books_health", "priority": 3,
+                      "title": "יש בספרים דבר שכדאי לתקן לפני ההגשה",
+                      "detail": "; ".join(i["title"] for i in serious[:3]),
+                      "cta": {"label": "לבדיקה", "view": "more", "anchor": "m-health"}})
     for miss in insights.missing_recurring(s, biz, today)[:3]:
         typical = f" (בדרך כלל ₪{miss['typical_total']:,.0f})" if miss["typical_total"] else ""
         tasks.append({"id": "missing_recurring", "priority": 3,

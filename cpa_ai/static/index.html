@@ -123,7 +123,7 @@ const money2=n=>n==null?"—":Number(n).toLocaleString("he-IL",{minimumFractionD
 const dstr=iso=>iso?iso.split("-").reverse().join("/"):"—";
 function store(k,v){try{if(v!==undefined)localStorage.setItem(k,v);return localStorage.getItem(k)}catch(e){return null}}
 const S={biz:null,list:[],view:"home",filter:"pending_review",home:null,me:{is_admin:true,can_sign:true,role:"admin"}};
-const CATS={office_supplies:"ציוד משרדי",software:"תוכנה",inventory:"מלאי",professional_services:"שירותים מקצועיים",vehicle:"רכב",refreshments:"כיבוד",hospitality:"אירוח",equipment:"ציוד / רכוש קבוע"};
+const CATS={office_supplies:"ציוד משרדי",software:"תוכנה",inventory:"מלאי",professional_services:"שירותים מקצועיים",vehicle:"רכב",refreshments:"כיבוד",hospitality:"אירוח",equipment:"ציוד / רכוש קבוע",rent:"שכירות ודמי ניהול",telecom:"תקשורת וטלפון",utilities:"חשמל, מים וארנונה",insurance:"ביטוח עסקי",advertising:"פרסום",bank_fees:"עמלות בנק וסליקה",training:"הדרכה והשתלמות",shipping:"משלוחים ודואר",maintenance:"אחזקה ותיקונים",gifts:"מתנות ללקוחות",travel:"נסיעות ולינה"};
 const SRC={manual:["✍️","הוזן ידנית"],api:["✍️","הוזן ידנית"],upload:["📤","הועלה"],email:["📧","הגיע במייל"],whatsapp:["💬","הגיע בוואטסאפ"]};
 const STATUS={confirmed:["ok","מאושר"],pending_review:["warn","מחכה לבדיקה"],rejected:["err","נדחה"],prepared:["warn","מוכן לאישור"],approved:["ok","אושר"],superseded:["err","מיושן"]};
 
@@ -262,18 +262,24 @@ function docCard(d){const e=d.extracted,x=d.decision,[ic,srcName]=SRC[d.source]|
   const act=d.status==="pending_review"?`<button class="act sm" data-rv="${d.id}" data-a="confirm">✓ אישור</button><button class="sec sm" data-edit="${d.id}">✎ תיקון</button><button class="ghost sm" data-rv="${d.id}" data-a="reject">דחייה</button>`:"";
   const ask=(x.findings||[]).some(f=>f.code==="ALLOCATION_MISSING")?`<button class="sec sm" data-ask="${d.id}">✉️ בקשה מהספק</button>`:"";
   const orig=d.attachment_name?`<button class="ghost sm" data-file="${d.id}">📎 המקור</button>`:"";
-  const q=`<button class="ghost sm" data-q="${d.id}" data-who="${esc(who)}">💬 שאלה</button>`;
+  const q=`<button class="ghost sm" data-q="${d.id}" data-who="${esc(who)}">💬 שאלה</button>`+(d.status==="confirmed"?`<button class="ghost sm" data-reopen="${d.id}">↩️ החזרה לבדיקה</button>`:"");
   return `<article class="doc"><div class="d-top"><b>${esc(who)}</b><span class="amt">${money2(x.total_amount)}</span></div>
    <div class="d-meta"><span class="pill ${cls}">${stName}</span><span title="${esc(srcName)}">${ic} ${esc(srcName)}</span><span>${dstr(e.doc_date)}</span>${x.category_label&&x.category!=="unknown"?`<span>· ${esc(x.category_label)}</span>`:""}${d.direction==="income"?'<span class="pill">הכנסה</span>':""}${x.payment_method==="cash"?'<span class="pill warn">💵 מזומן</span>':""}${e.doc_type==="credit_invoice"?'<span class="pill">↩️ זיכוי</span>':""}${d.period_date?`<span class="pill warn" title="הגיע אחרי שהתקופה אושרה">⏰ מדווח ב-${dstr(d.period_date)}</span>`:""}${d.paid_on?`<span class="pill ok">שולם ${dstr(d.paid_on)}</span>`:""}${x.is_foreign_vendor?`<span class="pill">🌍 ספק זר${x.currency&&x.currency!=="ILS"?" · "+esc(x.currency):""}</span>`:""}</div>
    ${findingsHtml(d)}<div class="d-act">${act}${ask}${orig}${q}</div></article>`}
 async function renderDocs(){
   const el=$("v-docs");if(!S.biz){el.innerHTML='<div class="card">קודם יוצרים עסק</div>';return}
   el.innerHTML=skeleton(4);
-  const [docs,h]=await Promise.all([api(`/api/v1/businesses/${bid()}/documents?limit=100${S.filter?"&status="+S.filter:""}`),api(`/api/v1/businesses/${bid()}/home`)]);S.home=h;drawNav();
+  const qs=(S.search?"&q="+encodeURIComponent(S.search):"")+(S.dir?"&direction="+S.dir:"");
+  const [docs,h]=await Promise.all([api(`/api/v1/businesses/${bid()}/documents?limit=100${S.filter?"&status="+S.filter:""}${qs}`),api(`/api/v1/businesses/${bid()}/home`)]);S.home=h;drawNav();
   const chips=[["pending_review","מחכים לבדיקה"],["","הכל"],["confirmed","מאושרים"],["rejected","נדחו"]].map(([k,l])=>`<button class="chip" data-f="${k}" aria-pressed="${S.filter===k}">${l}</button>`).join("");
   const bulk=h.counts.bulk_ready&&S.filter==="pending_review"?`<div class="card" style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap"><span><b>${h.counts.bulk_ready}</b> מסמכים בטוחים לאישור (בלי שגיאות, עם כלל מאומת)</span><button class="act" data-bulk="1">✓ אשרו את כולם</button></div>`:"";
-  el.innerHTML=`<div class="row" style="align-items:center"><h2 style="flex:1;margin:0">מסמכים</h2><button class="sec" id="add-income">➕ הכנסה</button></div><div class="chips" style="margin-top:12px" role="group" aria-label="סינון">${chips}</div>${bulk}${docs.length?docs.map(docCard).join(""):'<div class="card muted">אין כאן מסמכים. 🎉</div>'}`;
+  el.innerHTML=`<div class="row" style="align-items:center"><h2 style="flex:1;margin:0">מסמכים</h2><button class="sec" id="add-income">➕ הכנסה</button></div><div class="chips" style="margin-top:12px" role="group" aria-label="סינון">${chips}</div>
+   <div class="row" style="margin:8px 0"><label>חיפוש (ספק, לקוח, מספר, סכום…)<input id="d-search" type="search" value="${esc(S.search||"")}" placeholder="למשל: אופיס, 1180, 513456780"></label>
+   <label>סוג<select id="d-dir"><option value="">הכל</option><option value="expense" ${S.dir==="expense"?"selected":""}>הוצאות</option><option value="income" ${S.dir==="income"?"selected":""}>הכנסות</option></select></label></div>${bulk}${docs.length?docs.map(docCard).join(""):'<div class="card muted">אין כאן מסמכים. 🎉</div>'}`;
   $("add-income").onclick=addIncome;
+  let timer;$("d-search").oninput=e=>{clearTimeout(timer);timer=setTimeout(()=>{S.search=e.target.value.trim();renderDocs().then(()=>{const i=$("d-search");i.focus();i.setSelectionRange(i.value.length,i.value.length)})},350)};
+  $("d-dir").onchange=e=>{S.dir=e.target.value;renderDocs()};
+  el.querySelectorAll("[data-reopen]").forEach(b=>b.onclick=async()=>{if(!confirm("להחזיר את המסמך לבדיקה? הוא יצא מהדוחות עד לאישור מחדש."))return;try{await api(`/api/v1/documents/${b.dataset.reopen}/reopen`,{method:"POST"});toast("הוחזר לבדיקה",true);renderDocs()}catch(e){toast(e.message)}});
   el.querySelectorAll("[data-f]").forEach(b=>b.onclick=()=>{S.filter=b.dataset.f;renderDocs()});
   const bb=el.querySelector("[data-bulk]");if(bb)bb.onclick=async()=>{await bulkConfirm();renderDocs()};
   el.querySelectorAll("[data-rv]").forEach(b=>b.onclick=()=>reviewDoc(+b.dataset.rv,b.dataset.a));
@@ -398,13 +404,14 @@ async function renderReports(){
   el.innerHTML=`<h2>דוחות</h2><div class="banner">המערכת מכינה. מייצג מורשה (רו"ח, יועץ מס או עו"ד) מאשר, ורק הוא מגיש לרשות המסים.</div>
    <div class="card"><h3>הכנת דוח</h3><div class="row"><label>סוג<select id="r-kind"><option value="vat_period">מע"מ תקופתי</option><option value="income_tax_advance">מקדמות מס הכנסה</option><option value="annual_estimate">הערכה שנתית</option></select></label><label>שנה<input id="r-year" type="number" value="${now.getFullYear()}"></label><label>חודש<input id="r-month" type="number" min="1" max="12" value="${now.getMonth()||12}"></label><button class="act" id="r-go">הכנה</button></div>
    <div class="row hide" id="r-annual" style="margin-top:10px"><label>נקודות זיכוי<input id="r-cp" type="number" step="0.25" value="2.25"></label><label>תרומות השנה (₪)<input id="r-don" type="number" value="0"></label><label>הפסד מועבר משנים קודמות (₪)<input id="r-loss" type="number" value="0"></label></div></div>
-   <div class="card"><h3>חבילה לרואה החשבון</h3><p class="muted">קובץ אחד עם טבלת אקסל, הדוח המוכן וכל מסמכי המקור של התקופה.</p><div class="row"><label>שנה<input id="p-year" type="number" value="${now.getFullYear()}"></label><label>חודש בתקופה<input id="p-month" type="number" min="1" max="12" value="${now.getMonth()||12}"></label><button class="sec" id="p-go">הורדת חבילה</button><button class="ghost" id="u-go">קובץ מבנה אחיד (טיוטה)</button><button class="ghost" id="j-go">יומן פקודות (CSV)</button></div></div>
+   <div class="card"><h3>חבילה לרואה החשבון</h3><p class="muted">קובץ אחד עם טבלת אקסל, הדוח המוכן וכל מסמכי המקור של התקופה.</p><div class="row"><label>שנה<input id="p-year" type="number" value="${now.getFullYear()}"></label><label>חודש בתקופה<input id="p-month" type="number" min="1" max="12" value="${now.getMonth()||12}"></label><button class="sec" id="p-go">הורדת חבילה</button><button class="ghost" id="u-go">קובץ מבנה אחיד (טיוטה)</button><button class="ghost" id="j-go">יומן פקודות (CSV)</button><button class="ghost" id="x-go">חוברת Excel שנתית</button></div></div>
    ${reps.length?reps.map(reportCard).join(""):'<div class="card muted">עוד לא הוכנו דוחות.</div>'}`;
   const toggleAnnual=()=>$("r-annual").classList.toggle("hide",$("r-kind").value!=="annual_estimate");$("r-kind").onchange=toggleAnnual;toggleAnnual();
   $("r-go").onclick=async()=>{const k=$("r-kind").value,q=new URLSearchParams({kind:k,year:$("r-year").value});if(k!=="annual_estimate")q.set("month",$("r-month").value);else{q.set("credit_points",$("r-cp").value||2.25);q.set("donations",$("r-don").value||0);q.set("carried_loss",$("r-loss").value||0)}
     try{await api(`/api/v1/businesses/${bid()}/reports?${q}`,{method:"POST"});toast("הדוח הוכן",true);renderReports()}catch(e){toast(e.message)}};
   $("p-go").onclick=async()=>{try{const r=await api(`/api/v1/businesses/${bid()}/accountant-package?year=${$("p-year").value}&month=${$("p-month").value}`,{raw:true});saveBlob(await r.blob(),`package_${$("p-year").value}-${$("p-month").value}.zip`)}catch(e){toast(e.message)}};
   $("u-go").onclick=async()=>{try{const r=await api(`/api/v1/businesses/${bid()}/unified-file?year=${$("p-year").value}`,{raw:true});saveBlob(await r.blob(),`unified_${$("p-year").value}.zip`)}catch(e){toast(e.message)}};
+  $("x-go").onclick=async()=>{try{const r=await api(`/api/v1/businesses/${bid()}/export/annual-xlsx?year=${$("p-year").value}`,{raw:true});saveBlob(await r.blob(),`annual_${$("p-year").value}.xlsx`)}catch(e){toast(e.message)}};
   $("j-go").onclick=async()=>{try{const r=await api(`/api/v1/businesses/${bid()}/export/journal?year=${$("p-year").value}`,{raw:true});saveBlob(await r.blob(),`journal_${$("p-year").value}.csv`)}catch(e){toast(e.message)}};
   el.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>approve(+b.dataset.approve));
   el.querySelectorAll("[data-submit]").forEach(b=>b.onclick=()=>markSubmitted(+b.dataset.submit));
@@ -447,6 +454,10 @@ async function renderMore(){
     <div id="wi-list"></div>
     <div class="row"><label>הוסיפו תרחיש<select id="wi-type"></select></label><button class="sec" id="wi-add">+ הוספה</button><button class="act" id="wi-run">חישוב</button></div>
     <div id="wi-out"></div></details>
+  <details class="card" id="m-health"><summary><b>🩺 בדיקת ספרים</b></summary><div class="row" style="margin:8px 0"><label>שנה<input id="h-year" type="number" value="${new Date().getFullYear()}"></label><button class="sec" id="h-go">בדיקה</button></div><div id="health"></div></details>
+  <details class="card" id="m-close"><summary><b>✅ סגירת שנה</b></summary><div class="row" style="margin:8px 0"><label>שנה<input id="c-year" type="number" value="${new Date().getFullYear()}"></label><button class="sec" id="c-go">הצגה</button></div><div id="close"></div></details>
+  <details class="card" id="m-cash"><summary><b>📅 תחזית תזרים</b></summary><div id="cash"></div></details>
+  <details class="card" id="m-parties"><summary><b>👥 ספקים ולקוחות</b></summary><div class="row" style="margin:8px 0"><label>שנה<input id="pa-year" type="number" value="${new Date().getFullYear()}"></label><button class="sec" id="pa-go">הצגה</button></div><div id="parties"></div></details>
   <details class="card" id="m-profile"><summary><b>👤 כרטיס לקוח</b></summary><div id="prof"></div></details>
   <details class="card" id="m-conn"><summary><b>🔌 חיבורים וקריאת מסמכים</b></summary><div id="conn"></div></details>
   <details class="card" id="m-ar"><summary><b>💰 גבייה מלקוחות</b></summary><div id="ar"></div></details>
@@ -460,6 +471,10 @@ async function renderMore(){
   if(S.openAdvisor){S.openAdvisor=false;$("m-advisor").open=true;setTimeout(()=>$("m-advisor").scrollIntoView({behavior:"smooth",block:"start"}),50)}
   $("m-vendors").addEventListener("toggle",e=>e.target.open&&loadVendors(),{once:true});
   $("m-ar").addEventListener("toggle",e=>e.target.open&&loadAR());
+  $("m-health").addEventListener("toggle",e=>e.target.open&&loadHealth(),{once:true});$("h-go").onclick=loadHealth;
+  $("m-close").addEventListener("toggle",e=>e.target.open&&loadClose(),{once:true});$("c-go").onclick=loadClose;
+  $("m-cash").addEventListener("toggle",e=>e.target.open&&loadCash());
+  $("m-parties").addEventListener("toggle",e=>e.target.open&&loadParties(),{once:true});$("pa-go").onclick=loadParties;
   $("m-pnl").addEventListener("toggle",e=>e.target.open&&loadPnl(),{once:true});$("pnl-go").onclick=loadPnl;
   $("m-rules").addEventListener("toggle",e=>e.target.open&&loadRules(),{once:true});
   $("m-audit").addEventListener("toggle",e=>e.target.open&&loadAudit(),{once:true});
@@ -540,6 +555,23 @@ async function loadConn(){if(!S.biz)return;const c=await api(`/api/v1/businesses
   $("conn").innerHTML=`<p><b>📷 קריאת תמונות ו-PDF סרוק במחשב (OCR)</b> ${yes(x.ocr_local)}<br><span class="muted">נקרא בשרת, בלי לשלוח החוצה. נבדק תמיד בעין לפני אישור.</span></p>
    <p><b>🤖 קריאה בבינה מלאכותית</b> ${x.llm_provider?`<span class="pill ok">${esc(x.llm_provider)}</span>`:'<span class="pill warn">לא מוגדר</span>'} ${x.llm_consent?'<span class="pill ok">העסק הסכים</span>':'<span class="pill">העסק לא הסכים — לא נשלח</span>'}<br><span class="muted">מדויק יותר בצילומים קשים. נשלח רק בהסכמת העסק.</span></p>
    <p><b>🏦 הזרמת תנועות בנק/אשראי</b> ${yes(c.transactions.signed)}<br><span class="muted">שירות חיבור בנק שולח לכתובת: </span><code>${esc(c.transactions.webhook_path)}</code><br><span class="muted">חתימה: X-CPA-Signature (HMAC-SHA256). או דרך ה-API עם מפתח: POST /api/v1/businesses/${bid()}/bank/transactions</span></p>`}
+const SEV={high:["err","חמור"],medium:["warn","כדאי לבדוק"],low:["","למידע"]};
+async function loadHealth(){if(!S.biz)return;const r=await api(`/api/v1/businesses/${bid()}/health?year=${encodeURIComponent($("h-year").value)}`);
+  $("health").innerHTML=`<div class="kpis"><div class="kpi"><b>${r.score}</b><span>מדד בריאות</span><small class="muted">מתוך 100</small></div><div class="kpi"><b>${r.issues.length}</b><span>ממצאים</span></div></div>`+
+   (r.issues.length?r.issues.map(i=>`<div class="doc"><div class="d-top"><b>${esc(i.title)}</b><span class="pill ${SEV[i.severity][0]}">${SEV[i.severity][1]}</span></div><p style="margin:6px 0">${esc(i.detail)}</p><p class="muted" style="margin:0">💡 ${esc(i.action)}</p></div>`).join(""):'<div class="clear">✅ לא נמצא דבר שדורש תיקון</div>')+`<p class="muted">${esc(r.disclaimer)}</p>`}
+async function loadClose(){if(!S.biz)return;const r=await api(`/api/v1/businesses/${bid()}/year-close?year=${encodeURIComponent($("c-year").value)}`);
+  const ic={done:"✅",todo:"⬜",manual:"📝"};
+  $("close").innerHTML=`<div class="kpis"><div class="kpi"><b>${r.percent}%</b><span>מוכנות לסגירה</span></div></div>`+
+   r.items.map(i=>`<div class="doc"><div class="d-top"><b>${ic[i.status]} ${esc(i.title)}</b>${i.cta&&i.status==="todo"?`<button class="sec sm" data-cgo="${esc(i.cta.view)}" data-anchor="${esc(i.cta.anchor||"")}">${esc(i.cta.label)}</button>`:""}</div><p class="muted" style="margin:4px 0 0">${esc(i.detail)}</p></div>`).join("")+`<p class="muted">${esc(r.disclaimer)}</p>`;
+  $("close").querySelectorAll("[data-cgo]").forEach(b=>b.onclick=()=>go(b.dataset.cgo,b.dataset.anchor||undefined))}
+async function loadCash(){if(!S.biz)return;const r=await api(`/api/v1/businesses/${bid()}/cashflow`);
+  const mname=m=>HEB_M[+m.slice(5)-1]+" "+m.slice(0,4);
+  $("cash").innerHTML=`<div style="overflow-x:auto"><table class="opt"><thead><tr><th>חודש</th><th>גבייה צפויה</th><th>הוצאות קבועות</th><th>מע"מ</th><th>מקדמות</th><th>נטו</th></tr></thead><tbody>${r.months.map(m=>`<tr><td>${mname(m.month)}</td><td>${money(m.inflow)}</td><td>${money(m.recurring)}</td><td>${money(m.vat)}</td><td>${money(m.advance)}</td><td><b style="color:var(--${m.net<0?"err":"ok"})">${money(m.net)}</b></td></tr>`).join("")}</tbody></table></div>
+   ${r.later_inflow?`<p class="muted">עוד ${money(r.later_inflow)} צפויים להיגבות אחרי התקופה.</p>`:""}<ul class="muted">${r.assumptions.map(a=>`<li>${esc(a)}</li>`).join("")}</ul>`}
+const HEB_M=["ינואר","פברואר","מרץ","אפריל","מאי","יוני","יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"];
+async function loadParties(){if(!S.biz)return;const r=await api(`/api/v1/businesses/${bid()}/parties?year=${encodeURIComponent($("pa-year").value)}`);
+  const tbl=(rows,title)=>`<h4>${title}</h4>${rows.length?`<table class="opt"><thead><tr><th>שם</th><th>מסמכים</th><th>סה"כ</th><th>חלק</th></tr></thead><tbody>${rows.slice(0,15).map(x=>`<tr><td>${esc(x.name)}${x.categories.length?`<br><small class="muted">${x.categories.map(esc).join(", ")}</small>`:""}</td><td>${x.documents}</td><td>${money(x.total)}</td><td>${Math.round(x.share*100)}%</td></tr>`).join("")}</tbody></table>`:'<p class="muted">אין נתונים</p>'}`;
+  $("parties").innerHTML=tbl(r.customers,"לקוחות")+tbl(r.vendors,"ספקים")}
 async function loadAR(){if(!S.biz)return;const r=await api(`/api/v1/businesses/${bid()}/receivables`);
   const B=[["0-30","עד 30 יום"],["31-60","31–60"],["61-90","61–90"],["90+","מעל 90"]];
   $("ar").innerHTML=`<div class="kpis">${B.map(([k,l])=>`<div class="kpi"><b>${money(r.buckets[k])}</b><span>${l}</span></div>`).join("")}</div><p class="muted">${esc(r.note)}</p>`+

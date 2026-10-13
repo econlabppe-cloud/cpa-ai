@@ -18,7 +18,8 @@ missing amounts, never guess a business number. Leave a field null if it is not 
 - vendor_id: digits only of ע.מ / ח.פ of the ISSUER (not the customer).
 - allocation_number: the "מספר הקצאה" if printed.
 - category_hint: one of office_supplies, software, inventory, professional_services,
-  vehicle, refreshments, hospitality, equipment, unknown. It is only a hint.
+  vehicle, refreshments, hospitality, equipment, rent, telecom, utilities, insurance, advertising,
+  bank_fees, training, shipping, maintenance, gifts, travel, unknown. It is only a hint.
 - currency: ISO code printed on the document (ILS unless another currency symbol/code is shown).
 - payment_method: cash | credit_card | bank | check | unknown, only if stated on the document.
 - is_foreign_vendor: true only for a non-Israeli issuer (no Israeli business number, foreign company name).

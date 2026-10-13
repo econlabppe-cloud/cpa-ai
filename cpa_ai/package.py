@@ -30,6 +30,76 @@ def _cell(value):
     return value
 
 
+def annual_workbook(s: Session, biz: Business, year: int) -> bytes:
+    """חוברת Excel שנתית (RTL): סיכום, הכנסות, הוצאות, מע"מ לפי תקופה, פחת — לעיון המשרד או הלקוח."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+
+    from .reports import periodic
+    start, end = date(year, 1, 1), date(year, 12, 31)
+    est = periodic.build_annual_estimate(s, biz, year, 2.25)
+    docs = [d for d in periodic._docs(s, biz.id, start, end) if d.status == "confirmed"]
+    wb = Workbook()
+    bold = Font(bold=True)
+
+    def sheet(ws, header, rows):
+        ws.sheet_view.rightToLeft = True
+        ws.append(header)
+        for c in ws[1]:
+            c.font = bold
+            c.alignment = Alignment(horizontal="right")
+        for r in rows:
+            ws.append([_cell(v) for v in r])
+        for col in ws.columns:
+            ws.column_dimensions[col[0].column_letter].width = min(max(len(str(c.value or "")) for c in col) + 3, 40)
+        ws.freeze_panes = "A2"
+
+    ws = wb.active
+    ws.title = "סיכום"
+    sheet(ws, ["פריט", "סכום"], [
+        ["עסק", biz.name], ["שנה", year],
+        ["הכנסות (לפני מע\"מ)", est["revenue_pre_vat"]], ["הוצאות מוכרות", est["recognized_expenses_total"]],
+        ["רווח עסקי", est["business_profit"]], ["מס הכנסה מוערך", est["estimated_income_tax"]],
+        ["ביטוח לאומי ובריאות מוערך", est["social_security"]["total"]], ["נטל כולל מוערך", est["total_burden"]],
+        ["שולם מראש", est["prepaid"]["total"]], ["יתרת מס (שלילי = החזר)", est["income_tax_balance"]],
+        *[[f"הוצאות — {k}", v] for k, v in est["recognized_expenses_by_category"].items()],
+        ["הערה", "הערכה בלבד — אינה דוח שנתי; פרמטרי המס לא כולם אומתו"]])
+
+    income_rows, expense_rows = [], []
+    for d in docs:
+        e, dec = d.extracted, d.decision
+        if d.direction == "income":
+            income_rows.append([d.doc_date.isoformat(), e.get("doc_number"), e.get("customer_name"),
+                                e.get("customer_id"), e.get("doc_type"), dec.get("pre_vat_amount"),
+                                dec.get("vat_amount"), dec.get("total_amount"), e.get("withholding_tax") or 0])
+        else:
+            expense_rows.append([d.doc_date.isoformat(), e.get("doc_number"), e.get("vendor_name"),
+                                 e.get("vendor_id"), dec.get("category_label"), dec.get("pre_vat_amount"),
+                                 dec.get("vat_amount"), dec.get("total_amount"), dec.get("recognized_expense"),
+                                 dec.get("deductible_vat")])
+    sheet(wb.create_sheet("הכנסות"), ["תאריך", "מספר", "לקוח", "מספר עוסק", "סוג", "לפני מע\"מ", "מע\"מ", "סה\"כ",
+                                      "ניכוי במקור"], income_rows)
+    sheet(wb.create_sheet("הוצאות"), ["תאריך", "מספר", "ספק", "מספר עוסק", "קטגוריה", "לפני מע\"מ", "מע\"מ", "סה\"כ",
+                                      "הוכר", "מע\"מ מנוכה"], expense_rows)
+    vat_rows, seen = [], set()
+    for m in range(1, 13):
+        ps, pe = periodic.vat_period_bounds(year, m, biz.vat_frequency)
+        if ps in seen:
+            continue
+        seen.add(ps)
+        p = periodic.build_vat_period(s, biz, ps, pe)
+        vat_rows.append([f"{ps.isoformat()} – {pe.isoformat()}", p["sales"]["taxable_pre_vat"], p["sales"]["output_vat"],
+                         p["inputs"]["fixed_assets_vat"] + p["inputs"]["other_vat"], p["vat_payable"]])
+    sheet(wb.create_sheet("מע\"מ לפי תקופה"), ["תקופה", "עסקאות לפני מע\"מ", "מע\"מ עסקאות", "מע\"מ תשומות", "לתשלום / (להחזר)"],
+          vat_rows)
+    sheet(wb.create_sheet("פחת"), ["נכס", "נרכש", "קבוצה", "שיעור", "עלות", "פחת השנה"],
+          [[x["vendor"], x["purchased"], x["asset_class"], x["rate"], x["cost"], x["depreciation"]]
+           for x in est["depreciation"]])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def _safe(name: str) -> str:
     return re.sub(r"[^\w.\-֐-׿]+", "_", name)[:80] or "file"
 

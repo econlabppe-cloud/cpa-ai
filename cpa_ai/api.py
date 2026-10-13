@@ -360,9 +360,49 @@ def create_app(database_url: str | None = None, api_key: str | None = None,
 
     @app.get("/api/v1/businesses/{bid}/documents", response_model=list[DocumentOut])
     def list_docs(bid: int, status: Optional[str] = None, limit: int = Query(100, ge=1, le=500),
-                  offset: int = Query(0, ge=0), s=Depends(session), who=Depends(actor)):
+                  offset: int = Query(0, ge=0), q: Optional[str] = Query(None, max_length=100),
+                  direction: Optional[Literal["income", "expense"]] = None, date_from: Optional[date] = None,
+                  date_to: Optional[date] = None, s=Depends(session), who=Depends(actor)):
+        """q: חיפוש חופשי בשם ספק/לקוח, מספר מסמך, מספר עוסק, קטגוריה, פריטים וסכום."""
         services.get(s, Business, bid)
-        return [doc_out(d) for d in services.list_documents(s, bid, status, limit, offset)]
+        return [doc_out(d) for d in services.list_documents(s, bid, status, limit, offset, q=q, direction=direction,
+                                                            date_from=date_from, date_to=date_to)]
+
+    @app.post("/api/v1/documents/{did}/reopen", response_model=DocumentOut)
+    def reopen(did: int, s=Depends(session), who=Depends(actor)):
+        return doc_out(services.reopen_document(s, did, who))
+
+    @app.get("/api/v1/businesses/{bid}/parties")
+    def parties(bid: int, year: int = Query(ge=2015, le=2100), s=Depends(session), who=Depends(actor)):
+        from . import insights
+        return insights.parties(s, services.get(s, Business, bid), year)
+
+    @app.get("/api/v1/businesses/{bid}/cashflow")
+    def cashflow(bid: int, months: int = Query(3, ge=1, le=12), today: Optional[date] = Query(None),
+                 s=Depends(session), who=Depends(actor)):
+        from . import insights
+        return insights.cashflow(s, services.get(s, Business, bid), today, months)
+
+    @app.get("/api/v1/businesses/{bid}/health")
+    def books_health(bid: int, year: int = Query(ge=2015, le=2100), s=Depends(session), who=Depends(actor)):
+        from . import health
+        return health.books_health(s, services.get(s, Business, bid), year)
+
+    @app.get("/api/v1/businesses/{bid}/year-close")
+    def year_close(bid: int, year: int = Query(ge=2015, le=2100), today: Optional[date] = Query(None),
+                   s=Depends(session), who=Depends(actor)):
+        from . import closing
+        return closing.year_close(s, services.get(s, Business, bid), year, today)
+
+    @app.get("/api/v1/businesses/{bid}/export/annual-xlsx")
+    def export_annual_xlsx(bid: int, year: int = Query(ge=2015, le=2100), s=Depends(session), who=Depends(actor)):
+        from . import package
+        biz = services.get(s, Business, bid)
+        services.audit(s, who, "export_annual_xlsx", "business", biz.id, year=year)
+        s.commit()
+        return Response(package.annual_workbook(s, biz, year),
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="annual_{biz.id}_{year}.xlsx"'})
 
     @app.get("/api/v1/documents/{did}", response_model=DocumentOut)
     def get_doc(did: int, s=Depends(session), who=Depends(actor)):
