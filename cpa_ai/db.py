@@ -178,8 +178,17 @@ class AuditLog(Base):
     row_hash: Mapped[str] = mapped_column(String(64), default="", server_default="")
 
 
+def normalize_url(url: str) -> str:
+    """ספקי Postgres (Neon, Supabase, Heroku) נותנים postgres:// או postgresql:// — SQLAlchemy היה מחפש מהם את
+    הדרייבר הישן psycopg2. כאן משתמשים ב-psycopg 3 שמותקן בפרויקט."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
 def make_sessionmaker(url: str | None = None):
-    url = url or os.getenv("CPA_AI_DATABASE_URL", "sqlite:///./cpa_ai.db")
+    url = normalize_url(url or os.getenv("CPA_AI_DATABASE_URL", "sqlite:///./cpa_ai.db"))
     kwargs: dict = {}
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}

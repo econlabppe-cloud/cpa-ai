@@ -125,3 +125,25 @@ def test_limiter_prunes_stale_buckets():
     t[0] = 100.0                      # כל החלונות פגו
     rl.hit("fresh", 5, 10)
     assert len(rl._hits) < 100
+
+
+def test_postgres_urls_from_providers_use_psycopg3():
+    from cpa_ai.db import normalize_url
+    assert normalize_url("postgres://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
+    assert normalize_url("postgresql://u:p@h/db?sslmode=require") == "postgresql+psycopg://u:p@h/db?sslmode=require"
+    assert normalize_url("postgresql+psycopg://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
+    assert normalize_url("sqlite:///x.db") == "sqlite:///x.db"
+
+
+def test_vercel_entrypoint_explains_missing_config(monkeypatch):
+    import importlib
+    import sys
+
+    from fastapi.testclient import TestClient
+    for k in ("CPA_AI_USERS", "CPA_AI_API_KEY", "CPA_AI_DATABASE_URL", "CPA_AI_ALLOW_INSECURE"):
+        monkeypatch.delenv(k, raising=False)
+    sys.modules.pop("api.index", None)
+    mod = importlib.import_module("api.index")
+    r = TestClient(mod.app).get("/")
+    assert r.status_code == 503 and "CPA_AI_USERS" in r.text and "CPA_AI_DATABASE_URL" in r.text
+    sys.modules.pop("api.index", None)
